@@ -1,5 +1,5 @@
 # Ignore data directories
-data/*
+data\*
 
 # Ignore LaTeX auxillary files
 *.out
