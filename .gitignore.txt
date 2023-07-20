@@ -1,0 +1,11 @@
+# Ignore data directories
+data/*
+
+# Ignore LaTeX auxillary files
+*.out
+*.synctex.gz
+*.aux
+*.log
+
+# Ignore link to Overleaf
+*.url
