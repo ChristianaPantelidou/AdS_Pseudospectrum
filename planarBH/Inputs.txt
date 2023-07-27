@@ -1,0 +1,11 @@
+spectral_N=4
+l=0
+m=0
+q=0
+xgrid_min=-.75
+xgrid_max=.75
+ygrid_min=-1.6
+ygrid_max=1.6
+p_gridx=2
+p_gridy=2
+basis=GC
