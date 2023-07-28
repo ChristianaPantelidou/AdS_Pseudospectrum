@@ -78,19 +78,19 @@ using BlockArrays
         return foo
     end
     
-    # Construct the first Gram matrix. Note that factors of (-2) come
+    # Construct the first Gram matrix from the phi_1 phi_2 term . 
+    # Note that factors of (-2) come
     # from changing derivative matrices from x to rho
     function G1(x::Array, D::Matrix, m::Float64, q::Float64)
         rho = -x ./ 2 .+ (1/2)
-        f = f_p(x)
         wts = quadrature(x)
-        foo = Matrix{eltype(x)}(undef, (length(x), length(x)))
-        bar = similar(foo)
-        ThreadsX.foreach(eachindex(x)) do i
-            foo[i,i] = wts[i] * (f[i]/(1 - rho[i])^3)
-            bar[i,i] = wts[i] * (m^2 / (1- rho[i])^5 + q^2 / (1-rho[i])^3)
-        end
-        return bar + D' * (foo ./ 4) * D
+        #print("High res quadrature weights: "); show(wts); println("")
+        foo = Matrix{eltype(x)}(undef, size(D))
+        fdiag = diagm(wts .* f_p(x))
+        # Terms with derivatives
+        foo = D' * (diagm(ThreadsX.map(i -> fdiag[i,i] * (1 - rho[i]) / 4, eachindex(x))) * D) + D' * fdiag + fdiag * D
+        foo += diagm(ThreadsX.map(i -> 4 * fdiag[i,i] / (1 - rho[i]) + wts[i] * (m^2 /(1 - rho[i]) + q^2 * (1 - rho[i])), eachindex(x)))
+        return foo
     end
 
     # Construct the first Gram matrix. Note that factors of (-2) come
@@ -99,48 +99,74 @@ using BlockArrays
         rho = -x ./ 2 .+ (1/2)
         f = f_p(x)
         wts = quadrature(x)
-        foo = Matrix{eltype(x)}(undef, (length(x), length(x)))
-        ThreadsX.foreach(eachindex(x)) do i
-            foo[i,i] = wts[i] * (2 - f[i]) / (1 - rho[i])^3
-        end
-        return foo
+        return diagm(ThreadsX.map(i -> wts[i] * (2 - f[i]) * (1 - rho[i]), eachindex(x)))
     end
     
     # Use quadrature to construct Gram matrices at double the spectral
     # density, then use interpolation to bring the result back to the
     # proper shape
-    function Gram(D::Matrix, x::Vector, m::Float64, q::Float64)
-        # Interpolation from high res to low res (2N+2)x(2N+2)
-        Imat = interpolator(x)
-        # Hi res grid
-        y = Vector{eltype(x)}(undef, 2 * length(x))
-        ThreadsX.map!(i -> cos(pi*i / (length(y)-1)), y, 0:length(y)-1)
+    function Gram(x::Vector, D::Matrix, y::Vector, Dy::Matrix, m::Float64, q::Float64)
+        # Interpolation from high res (2N+2)x(2N+2) to low res (N+1)x(N+1)
+        Imat = interpolator(x,y)
+        ImatT = Imat'
         # Use high res grid to calculate G1, then interpolate down
-        G1_int = Imat' * G1(y,D,m,q) * Imat
-        Gup = reduce(hcat, [G1_int, zeros(eltype(x), size(D))])
+        #print("G1 high res: "); show(G1(y,Dy,m,q)); println("")
+        temp = Matrix{eltype(x)}(undef, (length(y), length(x)))
+        G1_int = Matrix{eltype(x)}(undef, size(D))
+        # Safe matrix product to handle Infs
+        G1mat = G1(y,Dy,m,q)
+        @views ThreadsX.foreach(Iterators.product(eachindex(y), eachindex(x))) do (i,j)
+            if any(isinf.(G1mat[i,:]))
+                temp[i,j] = Inf
+            else
+                temp[i,j] = dot(G1mat[i,:], Imat[:,j])
+            end
+        end
+        #print("Intermediate: "); show(temp); println("")
+        @views ThreadsX.foreach(Iterators.product(eachindex(x), eachindex(x))) do (i,j)
+            # Intermediate matrix has a row of Infs that multiplies either 0 or 1
+            if isinf(temp[end,j])
+                if i != length(x)
+                    # Infinite value is multiplied by 0 so does not contribute
+                    G1_int[i,j] = dot(ImatT[i,begin:end-1], temp[begin:end-1,j])
+                else
+                    # Execpt the last row where it is multiplied by 1
+                    G1_int[i,j] = Inf
+                end
+            else
+                G1_int[i,j] = dot(ImatT[i,:], temp[:,j])
+            end
+        end
+        #print("G1 interpolated: "); show(G1_int); println("")
+        # Remove rows and columns corresponding to the rho = 1 boundary
+        Gup = reduce(hcat, [view(G1_int, 1:length(x)-1, 1:length(x)-1), zeros(eltype(x), (length(x)-1, length(x)-1))])
         # Same for G2
+        #print("G2 high res: "); show(G2(y)); println("")
         G2_int = Imat' * G2(y) * Imat
-        Glow = reduce(hvat, [zeros(eltype(x), size(D)), G2_int])
+        #print("G2 interpolated: "); show(G2_int); println("")
+        # Remove rows and columns corresponding to the rho = 1 boundary
+        Glow = reduce(hcat, [zeros(eltype(x), (length(x)-1, length(x)-1)), view(G2_int, 1:length(x)-1, 1:length(x)-1)])
         G = vcat(Gup, Glow)
-    return G, inv(G)
+    return G
     end
 
-    # Interpolation between high and low resolution Gram matrices
-    function interpolator(x::Vector)
-        Nbar = 2 * length(x)
-        xbar = Vector{eltype(x)}(undef, Nbar)
-        ThreadsX.map!(i->cos(i*pi/Nbar), xbar, 0:Nbar-1)
-        Imat = Matrix{eltype(x)}(undef, (Nbar,Nbar))
-        kappa = [i == 1 ? 2 : i == Nbar ? 2 : 1 for i in eachindex(xbar)]
-        println(kappa)
-        ThreadsX.foreach(Iterators.product(eachindex(xbar), eachindex(x))) do (i,j)
-            sum = ThreadsX.sum(k == length(x) ? cos(k * xbar[i]) * cos(k * x[j]) : 2 * cos(k * xbar[i]) * cos(k * x[j]) for k in 1:length(x))
-            Imat[i,j] = (1 + sum) / (kappa[i] * length(x))
+    function delta(x, y)
+        return x == y ? 1 : 0
+    end
+
+    # Interpolation between high (y) and low (x) resolution Gram matrices
+    function interpolator(x::Vector, y::Vector)
+        tx = Vector{eltype(x)}(undef, length(x))
+        ty = Vector{eltype(y)}(undef, length(y))
+        ThreadsX.map!(i -> i * pi / (length(x) - 1), tx, 0:length(x)-1)
+        ThreadsX.map!(i -> i * pi / (length(y) - 1), ty, 0:length(y)-1)
+        Imat = Matrix{eltype(x)}(undef, (length(y),length(x)))
+        kappa = [i == 1 ? 2 : i == length(x) ? 2 : 1 for i in eachindex(x)]
+        ThreadsX.foreach(Iterators.product(eachindex(y), eachindex(x))) do (i,j)
+            sum = ThreadsX.sum((2 - delta(k, length(x)-1)) * cos(k * ty[i]) * cos(k * tx[j]) for k in 1:length(x)-1)
+            Imat[i,j] = (1 + sum) / (kappa[j] * (length(x)-1))
         end
-        Iup = reduce(hcat,[Imat, zeros(eltype(Imat), size(Imat))])
-        Idown = reduce(hcat, [zeros(eltype(Imat), size(Imat)), Imat])
-        BigI = vcat(Iup, Idown)
-        return BigI
+        return Imat
     end
 
 end

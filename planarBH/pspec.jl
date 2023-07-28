@@ -37,7 +37,6 @@ const debug = 0
 
 @with_kw mutable struct Inputs
     N::Int64 = 4
-    l::Int64 = 0
     m::Float64 = 0
     q::Float64 = 1
     xmin::Float64 = -1
@@ -46,7 +45,7 @@ const debug = 0
     ymax::Float64 = 1
     xgrid::Int64 = 2
     ygrid::Int64 = 2
-    basis::String = "GC"
+    basis::String = "GL"
 end
 
 # Read parameters from input file and store in Inputs struct
@@ -76,8 +75,6 @@ function readInputs(f::String)::Inputs
             elseif isodd(inpts.N)
                 inpts.N += 1
             end
-        elseif k == "l"
-            inpts.l = parse(Int, get(data, k, nothing))
         elseif k == "m"
             inpts.m = parse(Float64, get(data, k, nothing))
         elseif k == "q"
@@ -101,12 +98,7 @@ function readInputs(f::String)::Inputs
         elseif k == "ygrid_max"
             inpts.ymax = parse(Float64, get(data, k, nothing))           
         elseif k == "basis"
-            # Don't need to parse strings
-            inpts.basis = get(data, k, nothing)
-            # If none of the inputs are chosen, default to interior
-            if !(occursin(inpts.basis, "GC GL LGR RGR")) || typeof(inpts.basis) == Nothing
-                inpts.basis = "GC"
-            end
+            nothing
         else
             println(""); println("\nERROR: unexpected entry in input file: ", k)
         end
@@ -452,18 +444,24 @@ inputs = readInputs("./Inputs.txt")
 # Compute the basis
 x, D, DD = make_basis(inputs, P)
 rho = -x ./2 .+ (1/2)
-println("Collocation points: ", x)
 
-# Construct operator
-Lup = reduce(hcat, [zeros(eltype(x), (length(x),length(x))), diagm([(1 - rho[i])^2 for i in eachindex(rho)])])
-Llow = reduce(hcat, [L1(x,D,DD,slf.pp,slf.p,slf.V,slf.w,inputs.m,inputs.q), L2(x,D,slf.gamma,slf.gammap,slf.w)])
+# Construct operator but remove columns and rows corresponding to rho=1 boundary
+Lup = reduce(hcat, [zeros(eltype(x), (length(x)-1,length(x)-1)), view(diagm([(1 - rho[i])^(-2) for i in eachindex(rho)]), 1:length(x)-1, 1:length(x)-1)])
+Llow = reduce(hcat, [view(L1(x,D,DD,slf.pp,slf.p,slf.V,slf.w,inputs.m,inputs.q), 1:length(x)-1, 1:length(x)-1), view(L2(x,D,slf.gamma,slf.gammap,slf.w), 1:length(x)-1, 1:length(x)-1)])
 BigL = 1im .* vcat(Lup, Llow)
 
-#
-G, invG = quad.Gram(D, x, inputs.m, inputs.q)
+# Copy of basis at double spectral resolution
+inputs2 = deepcopy(inputs)
+inputs2.N = 2 * inputs.N
+y, Dy, DDy = make_basis(inputs2, P)
+
+# Construct the Gram matrix: compute at double resolution, then 
+# interpolate down and finally remove rows and columns corresponding
+# to rho = 1
+G = quad.Gram(x, D, y, Dy, inputs.m, inputs.q)
 
 # Debug
-if debug == 0
+if debug > 0
     print("Collocation points = ", size(x), " "); show(x); println("")
     print("D = ", size(D), " "); show(D); println("")
     print("DD = ", size(DD), " "); show(DD); println("")
@@ -473,16 +471,13 @@ if debug == 0
     print("G = ", size(G), " "); show(G); println("")
 end
 
-exit()
-
 # Find the eigenvalues
 println("Computing eigenvalues...")
-if typeof(L) == Matrix{Complex{BigFloat}}
-    vals = ThreadsX.sort!(GenericLinearAlgebra.eigvals(convert(Matrix{Complex{Float64}}, L), convert(Matrix{Complex{Float64}}, R)), alg=ThreadsX.StableQuickSort, by = x -> sqrt(real(x)^2 + imag(x)^2))
-else
-    vals = ThreadsX.sort!(GenericLinearAlgebra.eigvals(L, R), alg=ThreadsX.StableQuickSort, by = x -> sqrt(real(x)^2 + imag(x)^2))
-end
+vals = ThreadsX.sort!(GenericLinearAlgebra.eigvals(BigL), alg=ThreadsX.StableQuickSort, by = x -> sqrt(real(x)^2 + imag(x)^2))
+
 print("Done! Eigenvalues = "); show(vals); println("")
+
+exit()
 
 # Write eigenvalues to file for this specific l value
 io.writeData(vals, inputs.l, inputs.rh)
