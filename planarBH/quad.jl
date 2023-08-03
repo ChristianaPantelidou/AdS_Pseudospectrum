@@ -79,24 +79,24 @@ using BlockArrays
     end
     
     # Construct the first Gram matrix from the phi_1 phi_2 term . 
-    # Note that factors of (-2) come
+    # Note that factors of (2) come
     # from changing derivative matrices from x to rho
     function G1(x::Array, D::Matrix, m::Float64, q::Float64)
-        rho = -x ./ 2 .+ (1/2)
+        rho = x ./ 2 .+ (1/2)
         wts = quadrature(x)
         #print("High res quadrature weights: "); show(wts); println("")
         foo = Matrix{eltype(x)}(undef, size(D))
         fdiag = diagm(wts .* f_p(x))
         # Terms with derivatives
-        foo = D' * (diagm(ThreadsX.map(i -> fdiag[i,i] * (1 - rho[i]) / 4, eachindex(x))) * D) + D' * fdiag + fdiag * D
+        foo = D' * (diagm(ThreadsX.map(i -> fdiag[i,i] * (2)^2 * (1 - rho[i]), eachindex(x))) * D) - D' * (4 .* fdiag) - (4 .* fdiag) * D
         foo += diagm(ThreadsX.map(i -> 4 * fdiag[i,i] / (1 - rho[i]) + wts[i] * (m^2 /(1 - rho[i]) + q^2 * (1 - rho[i])), eachindex(x)))
         return foo
     end
 
-    # Construct the first Gram matrix. Note that factors of (-2) come
+    # Construct the first Gram matrix. Note that factors of (2) come
     # from changing derivative matrices from x to rho
     function G2(x::Array)
-        rho = -x ./ 2 .+ (1/2)
+        rho = x ./ 2 .+ (1/2)
         f = f_p(x)
         wts = quadrature(x)
         return diagm(ThreadsX.map(i -> wts[i] * (2 - f[i]) * (1 - rho[i]), eachindex(x)))
@@ -115,9 +115,12 @@ using BlockArrays
         G1_int = Matrix{eltype(x)}(undef, size(D))
         # Safe matrix product to handle Infs
         G1mat = G1(y,Dy,m,q)
+        # G(1,1) is Inf but only multiplies a non-zero value once
         @views ThreadsX.foreach(Iterators.product(eachindex(y), eachindex(x))) do (i,j)
-            if any(isinf.(G1mat[i,:]))
+            if i == 1 && j == 1
                 temp[i,j] = Inf
+            elseif i == 1
+                temp[i,j] = dot(G1mat[i,2:end], Imat[2:end,j])
             else
                 temp[i,j] = dot(G1mat[i,:], Imat[:,j])
             end
@@ -125,10 +128,10 @@ using BlockArrays
         #print("Intermediate: "); show(temp); println("")
         @views ThreadsX.foreach(Iterators.product(eachindex(x), eachindex(x))) do (i,j)
             # Intermediate matrix has a row of Infs that multiplies either 0 or 1
-            if isinf(temp[end,j])
-                if i != length(x)
+            if isinf(temp[begin,j])
+                if i != 1
                     # Infinite value is multiplied by 0 so does not contribute
-                    G1_int[i,j] = dot(ImatT[i,begin:end-1], temp[begin:end-1,j])
+                    G1_int[i,j] = dot(ImatT[i,begin+1:end], temp[begin+1:end,j])
                 else
                     # Execpt the last row where it is multiplied by 1
                     G1_int[i,j] = Inf
@@ -139,13 +142,13 @@ using BlockArrays
         end
         #print("G1 interpolated: "); show(G1_int); println("")
         # Remove rows and columns corresponding to the rho = 1 boundary
-        Gup = reduce(hcat, [view(G1_int, 1:length(x)-1, 1:length(x)-1), zeros(eltype(x), (length(x)-1, length(x)-1))])
+        Gup = reduce(hcat, [view(G1_int, 2:length(x), 2:length(x)), zeros(eltype(x), (length(x)-1, length(x)-1))])
         # Same for G2
         #print("G2 high res: "); show(G2(y)); println("")
         G2_int = Imat' * G2(y) * Imat
         #print("G2 interpolated: "); show(G2_int); println("")
         # Remove rows and columns corresponding to the rho = 1 boundary
-        Glow = reduce(hcat, [zeros(eltype(x), (length(x)-1, length(x)-1)), view(G2_int, 1:length(x)-1, 1:length(x)-1)])
+        Glow = reduce(hcat, [zeros(eltype(x), (length(x)-1, length(x)-1)), view(G2_int, 2:length(x), 2:length(x))])
         G = vcat(Gup, Glow)
     return G
     end
