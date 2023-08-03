@@ -293,9 +293,9 @@ function L1(x::Array, D::Matrix, DD::Matrix, pp, p, V, w, q::Float64, m::Float64
     pp_v = pp(x)
     V_v = V(x, m, q)
     w_v = w(x)
-    # Factors of (-2) come from change of derivatives to rho from x
+    # Factors of (2) come from change of derivatives to rho from x
     @views ThreadsX.foreach(eachindex(x)) do i
-        foo[i,:] = (pp_v[i] / ((-2) * w_v[i])) .* D[i,:] + (p_v[i] / ((-2)^2 * w_v[i])).* DD[i,:]
+        foo[i,:] = ((2) * pp_v[i] / (w_v[i])) .* D[i,:] + ((2)^2 * p_v[i] / (w_v[i])).* DD[i,:]
         foo[i,i] -= V_v[i] / w_v[i]
     end
     return foo
@@ -308,7 +308,7 @@ function L2(x::Array, D::Matrix, gamma, gammap, w)
     foo = Matrix{Complex{eltype(x)}}(undef, (length(x),length(x)))
     # Factors of (-2) come from change of derivatives to rho from x
     @views ThreadsX.foreach(eachindex(x)) do i
-        foo[i,:] = (2 * g_v[i] / ((-2) * w_v[i])) .* D[i,:]
+        foo[i,:] = (2 * (2) * g_v[i] / (w_v[i])) .* D[i,:]
         foo[i,i] += gp_v[i] / w_v[i]
     end
     return foo
@@ -443,11 +443,11 @@ inputs = readInputs("./Inputs.txt")
 
 # Compute the basis
 x, D, DD = make_basis(inputs, P)
-rho = -x ./2 .+ (1/2)
+rho = x ./2 .+ (1/2)
 
 # Construct operator but remove columns and rows corresponding to rho=1 boundary
-Lup = reduce(hcat, [zeros(eltype(x), (length(x)-1,length(x)-1)), view(diagm([(1 - rho[i])^(-2) for i in eachindex(rho)]), 1:length(x)-1, 1:length(x)-1)])
-Llow = reduce(hcat, [view(L1(x,D,DD,slf.pp,slf.p,slf.V,slf.w,inputs.m,inputs.q), 1:length(x)-1, 1:length(x)-1), view(L2(x,D,slf.gamma,slf.gammap,slf.w), 1:length(x)-1, 1:length(x)-1)])
+Lup = reduce(hcat, [zeros(eltype(x), (length(x)-1,length(x)-1)), view(diagm([(1 - rho[i])^(-2) for i in eachindex(rho)]), 2:length(x), 2:length(x))])
+Llow = reduce(hcat, [view(L1(x,D,DD,slf.pp,slf.p,slf.V,slf.w,inputs.m,inputs.q), 2:length(x), 2:length(x)), view(L2(x,D,slf.gamma,slf.gammap,slf.w), 2:length(x), 2:length(x))])
 BigL = 1im .* vcat(Lup, Llow)
 
 # Copy of basis at double spectral resolution
@@ -463,6 +463,7 @@ G = quad.Gram(x, D, y, Dy, inputs.m, inputs.q)
 # Debug
 if debug > 0
     print("Collocation points = ", size(x), " "); show(x); println("")
+    print("Rho collocations = ", size(rho), " "); show(rho); println("")
     print("D = ", size(D), " "); show(D); println("")
     print("DD = ", size(DD), " "); show(DD); println("")
     print("Lup = ", size(Lup), " "); show(Lup); println("")
