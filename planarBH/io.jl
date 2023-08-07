@@ -15,7 +15,7 @@ export writeData, writeCondition
         # Check for data directory; create if abscent
         isdir("./data") ? nothing : mkdir("./data")
         # Construct file name
-        size = Integer(length(data))
+        size = Integer(length(data)/2)
         fname = "./data/Eigenvals_N" * string(size) * "P"
         if eltype(data) == BigFloat || eltype(data) == Complex{BigFloat}
             fname *= string(precision(BigFloat)) * ".txt"
@@ -31,18 +31,18 @@ export writeData, writeCondition
     end
 
     # Write vector data to file
-    function writeData(data::Vector, l::Int, rh::Float64)
+    function writeData(data::Vector, m::Float64, q::Float64)
         # Check for data directory; create if abscent
         isdir("./data") ? nothing : mkdir("./data")
         # Construct file name
-        size = Integer(length(data)-1)
+        size = Integer(length(data)/2)
         fname = "./data/Eigenvals_N" * string(size) * "P"
         if eltype(data) == BigFloat || eltype(data) == Complex{BigFloat}
             fname *= string(precision(BigFloat))
         else
             fname *= "64"
         end
-        fname *= "L" * string(l) * "r" * string(round(rh; digits=1)) * ".txt"
+        fname *= "m" * string(round(m; digits=1)) * "q" * string(round(q; digits=1)) * ".txt"
         open(fname, "w") do io
             writedlm(io, length(data))
             # Caution: \t character automatically added to file between real and imaginary parts
@@ -70,7 +70,7 @@ export writeData, writeCondition
         end
     end
 
-    function writeData(data::Matrix, x::Vector, inpts::Any)
+    function writeData(data::Matrix, x::Vector, m::Float64, q::Float64)
         # Check for data directory; create if abscent
         isdir("./data") ? nothing : mkdir("./data")
         # Construct file name
@@ -81,6 +81,7 @@ export writeData, writeCondition
         else
             fname *= "64.txt"
         end
+        fname *= "m" * string(round(m; digits=1)) * "q" * string(round(q; digits=1)) * ".txt"
         open(fname, "w") do io
             writedlm(io, adjoint([inpts.xmin::Float64, inpts.xmax::Float64, inpts.ymin::Float64, inpts.ymax::Float64, inpts.xgrid]))
             writedlm(io, hcat(size(data)))

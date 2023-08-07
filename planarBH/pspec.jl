@@ -8,6 +8,7 @@ using Parameters
 using Distributed
 using Random
 using LoopVectorization
+using Preconditioners
 @everywhere using LinearAlgebra
 @everywhere using GenericLinearAlgebra
 
@@ -25,7 +26,7 @@ import .gpusvd, .quad, .slf, .pert, .io
 # Debug 0: no debugging information
 # Debug 1: function timings and matrix inversion check
 # Debug 2: outputs from 1 plus matrix outputs and quadrature check
-const debug = 0
+const debug = 1
 
 #######################################################
 #= Psuedospectrum calculation leveraging parallelism =#
@@ -295,7 +296,7 @@ function L1(x::Array, D::Matrix, DD::Matrix, pp, p, V, w, q::Float64, m::Float64
     w_v = w(x)
     # Factors of (2) come from change of derivatives to rho from x
     @views ThreadsX.foreach(eachindex(x)) do i
-        foo[i,:] = ((2) * pp_v[i] / (w_v[i])) .* D[i,:] + ((2)^2 * p_v[i] / (w_v[i])).* DD[i,:]
+        foo[i,:] = (pp_v[i] / ((2) * w_v[i])) .* D[i,:] + (p_v[i] / ((2)^2 * w_v[i])).* DD[i,:]
         foo[i,i] -= V_v[i] / w_v[i]
     end
     return foo
@@ -306,9 +307,9 @@ function L2(x::Array, D::Matrix, gamma, gammap, w)
     gp_v = gammap(x)
     w_v = w(x)
     foo = Matrix{Complex{eltype(x)}}(undef, (length(x),length(x)))
-    # Factors of (-2) come from change of derivatives to rho from x
+    # Factors of (2) come from change of derivatives to rho from x
     @views ThreadsX.foreach(eachindex(x)) do i
-        foo[i,:] = (2 * (2) * g_v[i] / (w_v[i])) .* D[i,:]
+        foo[i,:] = (2 * g_v[i] / ((2) * w_v[i])) .* D[i,:]
         foo[i,i] += gp_v[i] / w_v[i]
     end
     return foo
@@ -365,6 +366,36 @@ function make_Z(inputs::Inputs, x::Vector)
     end
     return foo
 end
+
+#######################################
+#= Incomplete Cholesky Factorization =#
+#######################################
+
+function myCholesky(A::Matrix)
+    out = similar(A)
+    N = size(A,1)
+    for i in 1:N
+        for j in i:N
+            mysum = A[i,j]
+            if i > 1
+                mysum -= ThreadsX.sum(A[i,k] * A[j,k] for k in i-1:-1:1)
+            end
+            if i == j
+                mysum <= 0 ? println("Cholesky iteration failed.") : nothing
+                out[i,i] = sqrt(mysum)
+            else
+                out[i,j] = mysum / out[i,i]
+            end
+        end
+    end
+    ThreadsX.foreach(eachindex(out)) do I
+        if abs(out[I]) < 10E-300
+            out[I] = 0
+        end
+    end
+    return out
+end
+
 
 ##################################################
 #= Serial psuedospectrum for timing =#
@@ -450,6 +481,11 @@ Lup = reduce(hcat, [zeros(eltype(x), (length(x)-1,length(x)-1)), view(diagm([(1 
 Llow = reduce(hcat, [view(L1(x,D,DD,slf.pp,slf.p,slf.V,slf.w,inputs.m,inputs.q), 2:length(x), 2:length(x)), view(L2(x,D,slf.gamma,slf.gammap,slf.w), 2:length(x), 2:length(x))])
 BigL = 1im .* vcat(Lup, Llow)
 
+vals = ThreadsX.sort!(GenericLinearAlgebra.eigvals!(copy(BigL)), alg=ThreadsX.StableQuickSort, by = x -> sqrt(real(x)^2 + imag(x)^2))
+print("Done! Eigenvalues = "); show(vals); println("")
+# Write eigenvalues to file
+#io.writeData(vals, inputs.m, inputs.q)
+
 # Copy of basis at double spectral resolution
 inputs2 = deepcopy(inputs)
 inputs2.N = 2 * inputs.N
@@ -459,58 +495,59 @@ y, Dy, DDy = make_basis(inputs2, P)
 # interpolate down and finally remove rows and columns corresponding
 # to rho = 1
 G = quad.Gram(x, D, y, Dy, inputs.m, inputs.q)
+Ginv = inv(G)
+
+# Cholesky factoring
+F = myCholesky(G)
+
+print("Cholesky factorization: "); show(F); println("")
+print("F*F = G? ", LinearAlgebra.isapprox(F' * F, G)); show(F' * F - G); println("")
+
 
 # Debug
 if debug > 0
-    print("Collocation points = ", size(x), " "); show(x); println("")
-    print("Rho collocations = ", size(rho), " "); show(rho); println("")
-    print("D = ", size(D), " "); show(D); println("")
-    print("DD = ", size(DD), " "); show(DD); println("")
-    print("Lup = ", size(Lup), " "); show(Lup); println("")
-    print("Llow = ", size(Llow), " "); show(Llow); println("")
-    print("L = ", size(BigL), " "); show(BigL); println("")
-    print("G = ", size(G), " "); show(G); println("")
+    println(""); print("Collocation points = ", size(x), " "); show(x); println("")
+    println(""); print("Rho collocations = ", size(rho), " "); show(rho); println("")
+    println(""); print("D = ", size(D), " "); show(D); println("")
+    println(""); print("DD = ", size(DD), " "); show(DD); println("")
+    println(""); print("Lup = ", size(Lup), " "); show(Lup); println("")
+    println(""); print("Llow = ", size(Llow), " "); show(Llow); println("")
+    println(""); print("L = ", size(BigL), " "); show(BigL); println("")
+    println(""); print("G = ", size(G), " "); show(G); println("")
 end
 
-# Find the eigenvalues
-println("Computing eigenvalues...")
-vals = ThreadsX.sort!(GenericLinearAlgebra.eigvals(BigL), alg=ThreadsX.StableQuickSort, by = x -> sqrt(real(x)^2 + imag(x)^2))
-
-print("Done! Eigenvalues = "); show(vals); println("")
-
 exit()
-
-# Write eigenvalues to file for this specific l value
-io.writeData(vals, inputs.l, inputs.rh)
 
 ##################################
 #= Calculate the Psuedospectrum =#
 ##################################
 
-#=
 # Make the meshgrid
 Z = make_Z(inputs, x)
-# Construct the Gram matrices
-G, Ginv = quad.Gram(D, x, inputs.rh, inputs.l, inputs.basis)
 
-# Test the Gram matrix elements
-println("Integral[f1(x)] = 5/3 ? ", sum(quad.f1(x,Float64(1))))
-println("Integral[f2(x)] = ")
+# Calculate the sigma matrix. Rough benchmarking favours multiprocessor
+# methods if N > 50 and grid > 10
+println("Computing the psuedospectrum...")
+sig = gpusvd.pspec(Z, L)
 
+# Debug
+if debug > 0
+    ssig = serial_sigma(G, Ginv, Z, BigL)
+    print("Parallel/Serial calculation match: "); println(isapprox(ssig, sig))
+end
 
-# Factor the Gram matrix
-println("Gram matrix: ", G);
-println("Gram matrix is Hermitian? ", ishermitian(G))
-println("Gram matrix is positive definite? ", isposdef(G))
+# Write Psuedospectrum to file (x vector for data type)
+io.writeData(sig, x, inputs.m, inputs.q)
+print("Done! Sigma = "); show(sig); println("")
 
-exit()
 
 # Calculate the condition numbers of the eigenvalues
+#=
 println("Calculating conditition numbers...")
-k = condition(BigL, G, Ginv)
+k = condition(L, G, Ginv)
 println("Done! Condition numbers = ", k)
 io.writeCondition(k)
-
+=#
 
 
 # Debug/timing
@@ -533,20 +570,6 @@ if debug > 0
     rmprocs(workers())
 end
 
-# Calculate the sigma matrix. Rough benchmarking favours multiprocessor
-# methods if N > 50 and grid > 10
-println("Computing the psuedospectrum...")
-sig = gpusvd.pspec(G, Ginv, Z, BigL)
-
-# Debug
-if debug > 0
-    ssig = serial_sigma(G, Ginv, Z, BigL)
-    print("Parallel/Serial calculation match: "); println(isapprox(ssig, sig))
-end
-
-# Write Psuedospectrum to file (x vector for data type)
-io.writeData(sig, x, inputs)
-print("Done! Sigma = "); show(sig); println("")
 
 
 # Add a perturbation to the potential with a specified magnitude
@@ -557,6 +580,8 @@ print("Done! Sigma = "); show(sig); println("")
 #     Random.seed!(1234)
 #     dV = Vector{eltype(x)}(rand(length(x)))
 
+
+#=
 dV = cos.((2*pi*50) .* x)
 epsilon = 1e-3
 pert.vpert(epsilon, dV, slf.w, x, G, Ginv, BigL)

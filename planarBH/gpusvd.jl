@@ -68,7 +68,7 @@ using LinearAlgebra
     end
 
     # Calculate the pseudospectrum using the Gram matrices
-    function pspec(G::Matrix, Ginv::Matrix, Z::Matrix, L::Matrix)
+    function pspec(Z::Matrix, L::Matrix)
         ##########################################################################
         ##########################################################################
         #=
@@ -144,10 +144,8 @@ using LinearAlgebra
             @inbounds ThreadsX.foreach(CartesianIndices(Z)) do J
                 # Calculate the shifted matrix
                 Lshift = L - Z[J] .* I
-                # Calculate the adjoint
-                Lshift_adj = Ginv * adjoint(Lshift) * G
                 # Calculate the pseudospectrum
-                sig[J] = Float64(real(minimum(GenericLinearAlgebra.svdvals(Lshift_adj * Lshift))))
+                sig[J] = Float64(real(minimum(GenericLinearAlgebra.svdvals!(adjoint(Lshift) * Lshift))))
                 next!(p)
             end
             finish!(p)
@@ -156,7 +154,7 @@ using LinearAlgebra
             println("Constructing shifted matrices...")
             ThreadsX.map!(i -> (L - Z[i] .* I), foo, eachindex(Z))
             println("Constructing adjoint products...")
-            ThreadsX.map!(x -> (Ginv * adjoint(foo[x]) * G) * foo[x], 
+            ThreadsX.map!(x -> adjoint(foo[x]) * foo[x], 
                 bar, eachindex(foo))
             foo = nothing
             println("Calculating SVDs...")
