@@ -30,6 +30,30 @@ using BlockArrays
         end
         return wts
     end
+
+    # Matrix factorization for matrices that are only approximately Hermitian (up to
+    # machine precision)
+    function factorize!(A::Matrix)
+        # Test for symmetric up to machine precision
+        if !(isapprox(A, A'))
+            println("ERROR: Couldn't perform decomposition");
+            nothing
+        else
+            # Factorization should be of the BunchKaufman type. Produces F.U  
+            # (upper-triangular matrix), F.P (permutation vector), F.D (tridiagonal) 
+            A_bc = LinearAlgebra.bunchkaufman!(Hermitian(copy(A)))
+            # Perform Cholesky decomposition on tridiagonal portion
+            L = LinearAlgebra.cholesky!(A_bc.D)
+            # Construct the scaling matrix 
+            F = L.L * A_bc.U' * A_bc.P 
+            return F
+        end
+    end
+
+    function f_p(x::Array)
+        rho = x ./ 2 .+ (1/2)
+        return ThreadsX.map(i -> 1 - (1 - rho[i])^4, eachindex(rho))
+    end
     
     # Construct the first Gram matrix from the phi_1 phi_2 term . 
     # Note that factors of (2) come
@@ -94,18 +118,23 @@ using BlockArrays
                 G1_int[i,j] = dot(ImatT[i,:], temp[:,j])
             end
         end
+        
         # Remove rows and columns corresponding to the rho = 1 boundary
+        Fup = factorize!(Matrix(view(G1_int, 2:length(x), 2:length(x))))
         Gup = reduce(hcat, [view(G1_int, 2:length(x), 2:length(x)), zeros(eltype(x), (length(x)-1, length(x)-1))])
+
         # Same for G2
         #print("G2 high res: "); show(G2(y)); println("")
         G2_int = ImatT * G2(y) * Imat
-        #print("G2 interpolated: "); show(G2_int); println("")
-        # Remove rows and columns corresponding to the rho = 1 boundary
+        # Remove rows and columns corresponding to the rho = 1 boundary and factor
+        Flow = factorize!(Matrix(view(G2_int, 2:length(x), 2:length(x))))
         Glow = reduce(hcat, [zeros(eltype(x), (length(x)-1, length(x)-1)), view(G2_int, 2:length(x), 2:length(x))])
-        println("Gupper posdef? ", isposdef(Gup))
-        println("Glower posdef? ", isposdef(Glow))
+
+        # Stack and return
         G = vcat(Gup, Glow)
-    return G
+        F = vcat(reduce(hcat, [Fup, zeros(eltype(x), size(Fup))]),
+                reduce(hcat, [zeros(eltype(x), size(Flow)), Flow]))
+    return G, F
     end
 
     function delta(x, y)

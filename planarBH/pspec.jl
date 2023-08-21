@@ -26,7 +26,7 @@ import .gpusvd, .quad, .slf, .pert, .io
 # Debug 0: no debugging information
 # Debug 1: function timings and matrix inversion check
 # Debug 2: outputs from 1 plus matrix outputs and quadrature check
-const debug = 1
+const debug = 0
 
 #######################################################
 #= Psuedospectrum calculation leveraging parallelism =#
@@ -371,31 +371,6 @@ end
 #= Incomplete Cholesky Factorization =#
 #######################################
 
-function myCholesky(A::Matrix)
-    out = similar(A)
-    N = size(A,1)
-    for i in 1:N
-        for j in i:N
-            mysum = A[i,j]
-            if i > 1
-                mysum -= ThreadsX.sum(A[i,k] * A[j,k] for k in i-1:-1:1)
-            end
-            if i == j
-                mysum <= 0 ? println("Cholesky iteration failed.") : nothing
-                out[i,i] = sqrt(mysum)
-            else
-                out[i,j] = mysum / out[i,i]
-            end
-        end
-    end
-    ThreadsX.foreach(eachindex(out)) do I
-        if abs(out[I]) < 10E-300
-            out[I] = 0
-        end
-    end
-    return out
-end
-
 
 ##################################################
 #= Serial psuedospectrum for timing =#
@@ -486,6 +461,8 @@ print("Done! Eigenvalues = "); show(vals); println("")
 # Write eigenvalues to file
 #io.writeData(vals, inputs.m, inputs.q)
 
+exit()
+
 # Copy of basis at double spectral resolution
 inputs2 = deepcopy(inputs)
 inputs2.N = 2 * inputs.N
@@ -494,15 +471,10 @@ y, Dy, DDy = make_basis(inputs2, P)
 # Construct the Gram matrix: compute at double resolution, then 
 # interpolate down and finally remove rows and columns corresponding
 # to rho = 1
-G = quad.Gram(x, D, y, Dy, inputs.m, inputs.q)
-Ginv = inv(G)
+G, F = quad.Gram(x, D, y, Dy, inputs.m, inputs.q)
 
-# Cholesky factoring
-F = myCholesky(G)
-
-print("Cholesky factorization: "); show(F); println("")
-print("F*F = G? ", LinearAlgebra.isapprox(F' * F, G)); show(F' * F - G); println("")
-
+vals = ThreadsX.sort!(GenericLinearAlgebra.eigvals!(copy(F * BigL * inv(F))), alg=ThreadsX.StableQuickSort, by = x -> sqrt(real(x)^2 + imag(x)^2))
+print("Done! Rescaled eigenvalues = "); show(vals); println("")
 
 # Debug
 if debug > 0
