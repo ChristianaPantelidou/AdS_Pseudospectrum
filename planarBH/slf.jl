@@ -9,49 +9,23 @@ module slf
 
 using ThreadsX
 
-export w, p, pp, V, gamma, gammap
-
-    function f_p(x::Array)
-        rho = x ./2 .+ (1/2)
-        foo = Vector{eltype(x)}(undef, length(x))
-        ThreadsX.map!(i -> 1 - (1 - rho[i])^4, foo, eachindex(rho))
-        return foo
-    end
-
-    function w(x::Array)
-        return f_p(x) .- 2
-    end
+export p, pp, V
 
     function p(x::Array)
-        return -f_p(x)
+        foo = Vector{eltype(x)}(undef, length(x))
+        ThreadsX.map!(i -> - x[i]^2 * (1 - x[i]^4), foo, eachindex(x))
+        return foo
     end
     
     function pp(x::Array)
-        rho = x ./ 2 .+ (1/2)
-        f = f_p(x)
-        foo = Vector{eltype(x)}(undef, length(rho))
-        ThreadsX.map!(i -> (f[i] / (1 - rho[i])) - 4 * (1 - rho[i])^3, foo, eachindex(rho))
+        foo = Vector{eltype(x)}(undef, length(x))
+        ThreadsX.map!(i -> 4 * x[i]^5, foo, eachindex(x))
         return foo
     end
     
-    function V(x::Array, m::Float64, q::Float64)
-        rho = x ./ 2 .+ (1/2)
-        f = f_p(x)
+    function V(x::Array, q::Float64)
         foo = Vector{eltype(x)}(undef, length(x))
-        ThreadsX.map!(i -> (2 * f[i] - m^2 - 6) / (1 - rho[i])^2 - q^2 
-            - 2 * (1 - rho[i])^2 , foo, eachindex(x))
-        return foo
-    end
-
-    function gamma(x::Array)
-        return f_p(x) .- 1
-    end
-
-    function gammap(x::Array)
-        rho = x ./ 2 .+ (1/2)
-        f = f_p(x)
-        foo = Vector{eltype(x)}(undef, length(x))
-        ThreadsX.map!(i -> (1 - rho[i])^3 - 4 * (f[i] - 1) / (1 - rho[i]), foo, eachindex(rho))
+        ThreadsX.map!(i -> x[i]^2 * q^2 + 3 * (1 - x[i]^4) / 4 + 3 * (1 + x[i]^4), foo, eachindex(x))
         return foo
     end
 

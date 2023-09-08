@@ -117,22 +117,21 @@ function make_basis(inputs::Inputs, P::Int)
 
     # Determine data types and vector lengths
     if P > 64
-        x = Vector{BigFloat}(undef, inputs.N+1)
+        x = Vector{BigFloat}(undef, inputs.N)
     else
-        x = Vector{Float64}(undef, inputs.N+1)
+        x = Vector{Float64}(undef, inputs.N)
     end
 
-    # Reference the data type of the collocation vector 
-    # for the other matrices
-    D = Matrix{eltype(x)}(undef, (length(x), length(x)))
-    DD = similar(D)
-
-    println("Using the ", inputs.basis, " collocation grid.")
+    #println("Using the ", inputs.basis, " collocation grid.")
     # Algorithms for different collocation sets
     if inputs.basis == "GC"
         n = length(x)
         # Collocation points
         ThreadsX.map!(i -> cos(pi * (i + 0.5) / n), x, 0:n-1)
+        # Reference the data type of the collocation vector 
+        # for the other matrices
+        D = Matrix{eltype(x)}(undef, (length(x), length(x)))
+        DD = similar(D)
         # First derivative matrix
         ThreadsX.foreach(Iterators.product(1:n, 1:n)) do (i,j)
             if i != j
@@ -153,43 +152,45 @@ function make_basis(inputs::Inputs, P::Int)
         return x, D, DD
 
     elseif inputs.basis::String == "GL"
-        # Size of abscissa is N + 1
-        n = length(x)
-        N = length(x) - 1
         # Collocation points
-        ThreadsX.map!(i-> cos(pi*i / N), x, 0:N)
-        kappa = [i == 1 ? 2 : i == n ? 2 : 1 for i in eachindex(x)]
+        ThreadsX.map!(i-> cos(pi*i / inputs.N), x, 0:inputs.N-1)
+        x = push!(x, -1)
+        # Reference the data type of the collocation vector 
+        # for the other matrices
+        D = Matrix{eltype(x)}(undef, (length(x), length(x)))
+        DD = similar(D)
+        kappa = [i == 1 ? 2 : i == length(x) ? 2 : 1 for i in eachindex(x)]
         # First derivative matrix
-        ThreadsX.foreach(Iterators.product(eachindex(x), eachindex(x))) do (i,j)
+        ThreadsX.foreach(Iterators.product(0:inputs.N, 0:inputs.N)) do (i,j)
             if i == j
-                if i == 1 && j == 1
-                    D[i,j] = (2 * N^2 + 1) / 6
-                elseif i == n && j == n
-                    D[i,j] = -(2 * N^2 + 1) / 6
+                if i == 0 && j == 0
+                    D[i+1,j+1] = (2 * inputs.N^2 + 1) / 6
+                elseif i == inputs.N && j == inputs.N
+                    D[i+1,j+1] = -(2 * inputs.N^2 + 1) / 6
                 else
-                    D[i,i] = -x[i] / (2*(1 - x[i]^2))
+                    D[i+1,i+1] = -x[i+1] / (2*(1 - x[i+1]^2))
                 end
             else
-                D[i,j] = kappa[i] * (-1)^(i-j) / (kappa[j] * (x[i] - x[j]))
+                D[i+1,j+1] = kappa[i+1] * (-1)^(i-j) / (kappa[j+1] * (x[i+1] - x[j+1]))
             end
         end
         # Second derivative matrix
-        ThreadsX.foreach(Iterators.product(1:n, 1:n)) do (i,j)
+        ThreadsX.foreach(Iterators.product(0:inputs.N, 0:inputs.N)) do (i,j)
             if i == j
-                if i == 1 && j == 1
-                    DD[i,i] = (N^4 - 1) / 15
-                elseif i == n && j == n
-                    DD[i,i] = (N^4 - 1) / 15
+                if i == 0 && j == 0
+                    DD[i+1,i+1] = (inputs.N^4 - 1) / 15
+                elseif i == inputs.N && j == inputs.N
+                    DD[i+1,i+1] = (inputs.N^4 - 1) / 15
                 else
-                    DD[i,i] = -1 / (1 - x[i]^2)^2 - (N^2 - 1) / (3 * (1 - x[i]^2))
+                    DD[i+1,i+1] = -1 / (1 - x[i+1]^2)^2 - (inputs.N^2 - 1) / (3 * (1 - x[i+1]^2))
                 end
-            elseif i == 1 && j != 1
-                DD[i,j] = 2 * (-1)^(j-1) * ((2*N^2 + 1) * (1 - x[j]) - 6) / (3 * kappa[j] * (1 - x[j])^2)
-            elseif i == n && j != n
-                DD[i,j] = 2 * (-1)^(N+j-1) * ((2*N^2 + 1) * (1 + x[j]) - 6) / (3 * kappa[j] * (1 + x[j])^2)
+            elseif i == 0 && j != 0
+                DD[i+1,j+1] = 2 * (-1)^(j) * ((2*inputs.N^2 + 1) * (1 - x[j+1]) - 6) / (3 * kappa[j+1] * (1 - x[j+1])^2)
+            elseif i == inputs.N && j != inputs.N
+                DD[i+1,j+1] = 2 * (-1)^(inputs.N + j) * ((2*inputs.N^2 + 1) * (1 + x[j+1]) - 6) / (3 * kappa[j+1] * (1 + x[j+1])^2)
             else
-                DD[i,j] = (-1)^(i-j) * (x[i]^2 + x[i]*x[j] - 2) / 
-                            (kappa[j] * (1 - x[i]^2) * (x[j] - x[i])^2)
+                DD[i+1,j+1] = (-1)^(i-j) * (x[i+1]^2 + x[i+1]*x[j+1] - 2) / 
+                            (kappa[j+1] * (1 - x[i+1]^2) * (x[j+1] - x[i+1])^2)
             end
         end
         return x, D, DD
@@ -200,6 +201,10 @@ function make_basis(inputs::Inputs, P::Int)
         mrange = [pi*(2*n + 1 - 2*i) / (2*n + 1) for i in 0:n]
         # Collocation points
         x = @tturbo @. cos(mrange)
+        # Reference the data type of the collocation vector 
+        # for the other matrices
+        D = Matrix{eltype(x)}(undef, (length(x), length(x)))
+        DD = similar(D)
         # First derivative matrix
         ThreadsX.foreach(Iterators.product(1:n+1, 1:n+1)) do (i,j)
             if i == j
@@ -243,6 +248,10 @@ function make_basis(inputs::Inputs, P::Int)
         mrange = [2* pi * i / (2 * n + 1) for i in 0:n]
         # Collocation points
         x = @tturbo @. -cos(mrange)
+        # Reference the data type of the collocation vector 
+        # for the other matrices
+        D = Matrix{eltype(x)}(undef, (length(x), length(x)))
+        DD = similar(D)
         # First derivative matrix
         ThreadsX.foreach(Iterators.product(1:n+1, 1:n+1)) do (i,j)
             if i == j
@@ -288,32 +297,32 @@ end
 ###############
 
 # Use SL functions to calculate operator
-function L1(x::Array, D::Matrix, DD::Matrix, pp, p, V, w, q::Float64, m::Float64)
+function L1(x::Array, D::Matrix, DD::Matrix, pp, p, V, q::Float64)
     foo = Matrix{Complex{eltype(x)}}(undef, (length(x),length(x)))
-    p_v = p(x)
-    pp_v = pp(x)
-    V_v = V(x, m, q)
-    w_v = w(x)
-    # Factors of (2) come from change of derivatives to rho from x
+    z = (1 .- x) ./ 2
+    p_v = p(z)
+    pp_v = pp(z)
+    V_v = V(z, q)
+    # Factors of (2) come from change of derivatives to z from x
     @views ThreadsX.foreach(eachindex(x)) do i
-        foo[i,:] = (pp_v[i] / ((2) * w_v[i])) .* D[i,:] + (p_v[i] / ((2)^2 * w_v[i])).* DD[i,:]
-        foo[i,i] -= V_v[i] / w_v[i]
+        foo[i,:] = ((-2) * pp_v[i]) .* D[i,:] + ((-2)^2 * p_v[i] ) .* DD[i,:]
+        foo[i,i] += V_v[i]
     end
     return foo
 end
 
-function L2(x::Array, D::Matrix, gamma, gammap, w)
-    g_v = gamma(x)
-    gp_v = gammap(x)
-    w_v = w(x)
+
+function L2(x::Array, D::Matrix)
     foo = Matrix{Complex{eltype(x)}}(undef, (length(x),length(x)))
-    # Factors of (2) come from change of derivatives to rho from x
+    z = (1 .- x) ./ 2
+    # Factors of (-2) come from change of derivatives to z from x
     @views ThreadsX.foreach(eachindex(x)) do i
-        foo[i,:] = (2 * g_v[i] / ((2) * w_v[i])) .* D[i,:]
-        foo[i,i] += gp_v[i] / w_v[i]
+        foo[i,:] = ((-2) * 2 * 1im * z[i]^2) .* D[i,:]
     end
     return foo
 end
+
+
 
 ######################
 #= Condition number =#
@@ -449,15 +458,29 @@ inputs = readInputs("./Inputs.txt")
 
 # Compute the basis
 x, D, DD = make_basis(inputs, P)
-rho = x ./2 .+ (1/2)
 
-# Construct operator but remove columns and rows corresponding to rho=1 boundary
-Lup = reduce(hcat, [zeros(eltype(x), (length(x)-1,length(x)-1)), view(diagm([(1 - rho[i])^(-2) for i in eachindex(rho)]), 2:length(x), 2:length(x))])
-Llow = reduce(hcat, [view(L1(x,D,DD,slf.pp,slf.p,slf.V,slf.w,inputs.m,inputs.q), 2:length(x), 2:length(x)), view(L2(x,D,slf.gamma,slf.gammap,slf.w), 2:length(x), 2:length(x))])
-BigL = 1im .* vcat(Lup, Llow)
+println("Constructing the operator...")
 
-vals = ThreadsX.sort!(GenericLinearAlgebra.eigvals!(copy(BigL)), alg=ThreadsX.StableQuickSort, by = x -> sqrt(real(x)^2 + imag(x)^2))
-print("Done! Eigenvalues = "); show(vals); println("")
+# Construct operator but remove columns and rows corresponding to x=1 boundary
+#L_left = view(L1(x, D, DD, slf.pp, slf.p, slf.V, inputs.q), 2:length(x), 2:length(x))
+#L_right = view(L2(x, D), 2:length(x), 2:length(x))
+
+
+# Construct operator matrix
+function V(x::Array, l::Int64)
+    theta = (pi / 4) .* (x .+ 1)
+    foo = Vector{eltype(x)}(undef, length(x))
+    ThreadsX.map!(i -> sec(theta[i])^2 * (2 + l * (l + 1) / (tan(theta[i]))^2), foo, eachindex(x))
+    return foo
+end
+
+
+
+println("Done!")
+println("Computing eigenvalues...")
+vals = ThreadsX.sort!(GenericLinearAlgebra.eigvals!(L1(x, D, DD, slf.pp, slf.p, slf.V, inputs.q), L2(x, D)), alg=ThreadsX.StableQuickSort, by = x -> sqrt(real(x)^2 + imag(x)^2))
+println("Done!")
+print("Eigenvalues = "); show(vals); println("")
 # Write eigenvalues to file
 #io.writeData(vals, inputs.m, inputs.q)
 
@@ -471,15 +494,16 @@ y, Dy, DDy = make_basis(inputs2, P)
 # Construct the Gram matrix: compute at double resolution, then 
 # interpolate down and finally remove rows and columns corresponding
 # to rho = 1
+println("Iterpolating integrals...")
 G, F = quad.Gram(x, D, y, Dy, inputs.m, inputs.q)
+println("Done!")
 
-vals = ThreadsX.sort!(GenericLinearAlgebra.eigvals!(copy(F * BigL * inv(F))), alg=ThreadsX.StableQuickSort, by = x -> sqrt(real(x)^2 + imag(x)^2))
-print("Done! Rescaled eigenvalues = "); show(vals); println("")
+#vals = ThreadsX.sort!(GenericLinearAlgebra.eigvals!(copy(F * BigL * inv(F))), alg=ThreadsX.StableQuickSort, by = x -> sqrt(real(x)^2 + imag(x)^2))
+#print("Done! Rescaled eigenvalues = "); show(vals); println("")
 
 # Debug
-if debug > 0
+if debug > 1
     println(""); print("Collocation points = ", size(x), " "); show(x); println("")
-    println(""); print("Rho collocations = ", size(rho), " "); show(rho); println("")
     println(""); print("D = ", size(D), " "); show(D); println("")
     println(""); print("DD = ", size(DD), " "); show(DD); println("")
     println(""); print("Lup = ", size(Lup), " "); show(Lup); println("")
@@ -500,17 +524,19 @@ Z = make_Z(inputs, x)
 # Calculate the sigma matrix. Rough benchmarking favours multiprocessor
 # methods if N > 50 and grid > 10
 println("Computing the psuedospectrum...")
-sig = gpusvd.pspec(Z, L)
+sig = gpusvd.pspec(Z, copy(F * BigL * inv(F)))
 
 # Debug
-if debug > 0
+if debug > 1
     ssig = serial_sigma(G, Ginv, Z, BigL)
     print("Parallel/Serial calculation match: "); println(isapprox(ssig, sig))
 end
 
 # Write Psuedospectrum to file (x vector for data type)
-io.writeData(sig, x, inputs.m, inputs.q)
-print("Done! Sigma = "); show(sig); println("")
+io.writeData(sig, x, inputs.m, inputs.q, inputs)
+println("Done!")
+#print("Sigma = "); show(sig); println("")
+println("Smallest sigma: ", minimum(abs, sig))
 
 
 # Calculate the condition numbers of the eigenvalues
@@ -524,6 +550,7 @@ io.writeCondition(k)
 
 # Debug/timing
 if debug > 0
+    #=
     print("Ginv * G = I: "); println(isapprox(Ginv * G, I))
     # Serial Timing
     println("Timing for serial sigma:")
@@ -540,6 +567,7 @@ if debug > 0
     println("Timing for Distributed pspec:")
     @btime pspec(G, Ginv, Z, BigL)
     rmprocs(workers())
+    =#
 end
 
 

@@ -128,7 +128,7 @@ using LinearAlgebra
 
         foo = Vector{Matrix}(undef, length(Z))
         bar = Vector{Matrix}(undef, length(Z))
-        sig = Matrix{eltype(G)}(undef, size(Z))
+        sig = Matrix{Any}(undef, size(Z))
 
         # Run memory test to determine best parallel scheme
         Zsize = sizeof(Z) # in bits
@@ -145,7 +145,7 @@ using LinearAlgebra
                 # Calculate the shifted matrix
                 Lshift = L - Z[J] .* I
                 # Calculate the pseudospectrum
-                sig[J] = Float64(real(minimum(GenericLinearAlgebra.svdvals!(adjoint(Lshift) * Lshift))))
+                sig[J] = Float64(real(minimum(GenericLinearAlgebra.svdvals!(Lshift * conj(Lshift)))))
                 next!(p)
             end
             finish!(p)
@@ -154,10 +154,10 @@ using LinearAlgebra
             println("Constructing shifted matrices...")
             ThreadsX.map!(i -> (L - Z[i] .* I), foo, eachindex(Z))
             println("Constructing adjoint products...")
-            ThreadsX.map!(x -> adjoint(foo[x]) * foo[x], 
+            ThreadsX.map!(x -> foo[x] * conj(foo[x]), 
                 bar, eachindex(foo))
-            foo = nothing
             println("Calculating SVDs...")
+            foo = nothing
             sig = ThreadsX.map(GenericLinearAlgebra.svdvals!, bar)
             bar = nothing
         end
