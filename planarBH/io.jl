@@ -35,6 +35,7 @@ export writeData, writeCondition
         # Check for data directory; create if abscent
         isdir("./data") ? nothing : mkdir("./data")
         # Construct file name
+        # If basis=GC, 
         size = Integer(length(data)/2)
         fname = "./data/Eigenvals_N" * string(size) * "P"
         if eltype(data) == BigFloat || eltype(data) == Complex{BigFloat}

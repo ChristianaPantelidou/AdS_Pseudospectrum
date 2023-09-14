@@ -9,23 +9,41 @@ module slf
 
 using ThreadsX
 
-export p, pp, V
+export p, pp, V, w, gamma, gammap
 
-    function p(x::Array)
-        foo = Vector{eltype(x)}(undef, length(x))
-        ThreadsX.map!(i -> - x[i]^2 * (1 - x[i]^4), foo, eachindex(x))
+    function p(rho::Array)
+        foo = Vector{eltype(rho)}(undef, length(rho))
+        ThreadsX.map!(i -> -1 + (-1 + rho[i])^4, foo, eachindex(rho))
         return foo
     end
     
-    function pp(x::Array)
-        foo = Vector{eltype(x)}(undef, length(x))
-        ThreadsX.map!(i -> 4 * x[i]^5, foo, eachindex(x))
+    function pp(rho::Array)
+        foo = Vector{eltype(rho)}(undef, length(rho))
+        ThreadsX.map!(i -> (4 - 20*rho[i] + 30*rho[i]^2 - 20*rho[i]^3 + 5*rho[i]^4)/(-1 + rho[i]), foo, eachindex(rho))
         return foo
     end
     
-    function V(x::Array, q::Float64)
-        foo = Vector{eltype(x)}(undef, length(x))
-        ThreadsX.map!(i -> x[i]^2 * q^2 + 3 * (1 - x[i]^4) / 4 + 3 * (1 + x[i]^4), foo, eachindex(x))
+    function V(rho::Array, q::Float64, m::Float64)
+        foo = Vector{eltype(rho)}(undef, length(rho))
+        ThreadsX.map!(i -> (m^2 + q^2*(-1 + rho[i])^2 + 4*(2 - 4*rho[i] + 6*rho[i]^2 - 4*rho[i]^3 + rho[i]^4))/(-1 + rho[i])^2, foo, eachindex(rho))
+        return foo
+    end
+
+    function w(rho::Array)
+        foo = Vector{eltype(rho)}(undef, length(rho))
+        ThreadsX.map!(i -> -1 - (-1 + rho[i])^4, foo, eachindex(rho))
+        return foo
+    end
+
+    function gamma(rho::Array)
+        foo = Vector{eltype(rho)}(undef, length(rho))
+        ThreadsX.map!(i -> -(-1 + rho[i])^4, foo, eachindex(rho))
+        return foo
+    end
+
+    function gammap(rho::Array)
+        foo = Vector{eltype(rho)}(undef, length(rho))
+        ThreadsX.map!(i -> -5*(-1 + rho[i])^3, foo, eachindex(rho))
         return foo
     end
 

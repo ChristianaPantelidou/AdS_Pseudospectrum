@@ -26,7 +26,7 @@ import .gpusvd, .quad, .slf, .pert, .io
 # Debug 0: no debugging information
 # Debug 1: function timings and matrix inversion check
 # Debug 2: outputs from 1 plus matrix outputs and quadrature check
-const debug = 0
+const debug = 1
 
 #######################################################
 #= Psuedospectrum calculation leveraging parallelism =#
@@ -122,31 +122,29 @@ function make_basis(inputs::Inputs, P::Int)
         x = Vector{Float64}(undef, inputs.N)
     end
 
-    #println("Using the ", inputs.basis, " collocation grid.")
+    println("Using the ", inputs.basis, " collocation grid.")
     # Algorithms for different collocation sets
     if inputs.basis == "GC"
-        n = length(x)
-        # Collocation points
-        ThreadsX.map!(i -> cos(pi * (i + 0.5) / n), x, 0:n-1)
-        # Reference the data type of the collocation vector 
-        # for the other matrices
+        x = push!(x, 0)
         D = Matrix{eltype(x)}(undef, (length(x), length(x)))
         DD = similar(D)
+        # Collocation points
+        ThreadsX.map!(i -> cos(pi*(2*i + 1)/(2*(inputs.N + 1))), x, 0:inputs.N)
         # First derivative matrix
-        ThreadsX.foreach(Iterators.product(1:n, 1:n)) do (i,j)
+        ThreadsX.foreach(Iterators.product(0:inputs.N, 0:inputs.N)) do (i,j)
             if i != j
-                D[i,j] = (-1)^(i+j) * sqrt((1 - x[j] * x[j]) /
-                (1 - x[i]^2)) / (x[i] - x[j])
+                D[i+1,j+1] = (-1)^(i-j) * sqrt((1 - x[j+1]^2) /
+                (1 - x[i+1]^2)) / (x[i+1] - x[j+1])
             else
-                D[i,i] = x[i] / (2*(1 - x[i]^2))
+                D[i+1,i+1] = x[i+1] / (2*(1 - x[i+1]^2))
             end
         end
         # Second derivative matrix
-        ThreadsX.foreach(Iterators.product(1:n, 1:n)) do (i,j)
+        ThreadsX.foreach(Iterators.product(0:inputs.N, 0:inputs.N)) do (i,j)
             if i != j
-                DD[i,j] = D[i,j] * (x[i] / (1 - x[i] * x[i]) - 2 / (x[i] - x[j]))
+                DD[i+1,j+1] = D[i+1,j+1] * (x[i+1] / (1 - x[i+1]^2) - 2 / (x[i+1] - x[j+1]))
             else
-                DD[j,j] = x[j] * x[j] / (1 - x[j] * x[j])^2 - (n * n - 1) / (3 * (1. - x[j] * x[j]))
+                DD[j+1,j+1] = x[j+1] * x[j+1] / (1 - x[j+1]^2)^2 - inputs.N * (inputs.N + 2) / (3 * (1. - x[j+1]^2))
             end
         end
         return x, D, DD
@@ -296,6 +294,39 @@ end
 #= Operators =#
 ###############
 
+# SL operator format
+function L1(x::Array, D::Matrix, DD::Matrix, p, pp, V, w, inpts::Inputs)
+    rho = (1/2) .- (x ./ 2)
+    p_v = p(rho)
+    pp_v = pp(rho)
+    V_v = V(rho, inpts.q, inpts.m)
+    w_v = w(rho)
+    foo = Matrix{Complex{eltype(x)}}(undef, size(D))
+    # Factors of (-2) come from changing coordinates from x to rho
+    @views ThreadsX.foreach(eachindex(x)) do I
+        foo[I,:] = ((-2) * pp_v[I] / w_v[I]) .* D[I,:] + ((-2)^2 * p_v[I] / w_v[I]) .* DD[I,:]
+        foo[I,I] += V_v[I] / w_v[I]
+    end
+    return foo
+end
+
+function L2(x::Array, D::Matrix, gamma, gammap, w)
+    rho = (1/2) .- (x ./ 2)
+    g_v = gamma(rho)
+    gp_v = gammap(rho)
+    w_v = w(rho)
+    foo = Matrix{Complex{eltype(x)}}(undef, size(D))
+    # Factors of (-2) come from changing coordinates from x to rho
+    @views ThreadsX.foreach(eachindex(x)) do I
+        foo[I,:] = (2 * (-2) * g_v[I] / w_v[I]) .* D[I,:]
+        foo[I,I] += gp_v[I] / w_v[I]
+    end
+    return foo
+end
+
+
+# Generalized Eigenvalue problem: gives correct values
+#=
 # Use SL functions to calculate operator
 function L1(x::Array, D::Matrix, DD::Matrix, pp, p, V, q::Float64)
     foo = Matrix{Complex{eltype(x)}}(undef, (length(x),length(x)))
@@ -311,7 +342,6 @@ function L1(x::Array, D::Matrix, DD::Matrix, pp, p, V, q::Float64)
     return foo
 end
 
-
 function L2(x::Array, D::Matrix)
     foo = Matrix{Complex{eltype(x)}}(undef, (length(x),length(x)))
     z = (1 .- x) ./ 2
@@ -321,7 +351,7 @@ function L2(x::Array, D::Matrix)
     end
     return foo
 end
-
+=#
 
 
 ######################
@@ -460,12 +490,36 @@ inputs = readInputs("./Inputs.txt")
 x, D, DD = make_basis(inputs, P)
 
 println("Constructing the operator...")
+# Remove first row & column from each matrix
+nrows, ncols = size(D)
+println("N = ", inputs.N)
+println("x: ", size(x))
+println("D: ", size(D))
+L_up = reduce(hcat, [view(zeros(eltype(x), size(D)), 1:nrows-1, 1:ncols-1), view(diagm(ones(eltype(x), length(x))), 1:nrows-1, 1:ncols-1)])
+L_down = reduce(hcat, [view(L1(x,D,DD, slf.p, slf.pp, slf.V, slf.w, inputs), 1:nrows-1, 1:ncols-1), view(L2(x,D, slf.gamma, slf.gammap, slf.w), 1:nrows-1, 1:ncols-1)])
+BigL = 1im .* vcat(L_up, L_down)
 
-# Construct operator but remove columns and rows corresponding to x=1 boundary
-#L_left = view(L1(x, D, DD, slf.pp, slf.p, slf.V, inputs.q), 2:length(x), 2:length(x))
-#L_right = view(L2(x, D), 2:length(x), 2:length(x))
+# Debug
+if debug > 1
+    println(""); print("Collocation points = ", size(x), " "); show(x); println("")
+    println(""); print("D = ", size(D), " "); show(D); println("")
+    println(""); print("DD = ", size(DD), " "); show(DD); println("")
+    println(""); print("Lup = ", size(L_up), " "); show(L_up); println("")
+    println(""); print("Llow = ", size(L_down), " "); show(L_down); println("")
+    println(""); print("L = ", size(BigL), " "); show(BigL); println("")
+    #println(""); print("G = ", size(G), " "); show(G); println("")
+end
 
-
+println("Computing eigenvalues...")
+#vals = ThreadsX.sort!(GenericLinearAlgebra.eigvals!(copy(BigL)), alg=ThreadsX.StableQuickSort, by = x -> sqrt(real(x)^2 + imag(x)^2))
+println("Done!")
+#println(vals)
+# Write eigenvalues to file
+#io.writeData(vals, inputs.m, inputs.q)
+#exit()
+# Generalized eigenvalue problem
+#=
+println("Done!") 
 # Construct operator matrix
 function V(x::Array, l::Int64)
     theta = (pi / 4) .* (x .+ 1)
@@ -473,18 +527,13 @@ function V(x::Array, l::Int64)
     ThreadsX.map!(i -> sec(theta[i])^2 * (2 + l * (l + 1) / (tan(theta[i]))^2), foo, eachindex(x))
     return foo
 end
-
-
-
-println("Done!")
 println("Computing eigenvalues...")
 vals = ThreadsX.sort!(GenericLinearAlgebra.eigvals!(L1(x, D, DD, slf.pp, slf.p, slf.V, inputs.q), L2(x, D)), alg=ThreadsX.StableQuickSort, by = x -> sqrt(real(x)^2 + imag(x)^2))
 println("Done!")
 print("Eigenvalues = "); show(vals); println("")
 # Write eigenvalues to file
-#io.writeData(vals, inputs.m, inputs.q)
-
-exit()
+io.writeData(vals, inputs.m, inputs.q)
+=#
 
 # Copy of basis at double spectral resolution
 inputs2 = deepcopy(inputs)
@@ -498,25 +547,47 @@ println("Iterpolating integrals...")
 G, F = quad.Gram(x, D, y, Dy, inputs.m, inputs.q)
 println("Done!")
 
-#vals = ThreadsX.sort!(GenericLinearAlgebra.eigvals!(copy(F * BigL * inv(F))), alg=ThreadsX.StableQuickSort, by = x -> sqrt(real(x)^2 + imag(x)^2))
-#print("Done! Rescaled eigenvalues = "); show(vals); println("")
-
-# Debug
-if debug > 1
-    println(""); print("Collocation points = ", size(x), " "); show(x); println("")
-    println(""); print("D = ", size(D), " "); show(D); println("")
-    println(""); print("DD = ", size(DD), " "); show(DD); println("")
-    println(""); print("Lup = ", size(Lup), " "); show(Lup); println("")
-    println(""); print("Llow = ", size(Llow), " "); show(Llow); println("")
-    println(""); print("L = ", size(BigL), " "); show(BigL); println("")
-    println(""); print("G = ", size(G), " "); show(G); println("")
-end
-
-exit()
-
 ##################################
 #= Calculate the Psuedospectrum =#
 ##################################
+
+# Make the rescaled operator corresponding to the rescaled 
+# energy norm
+
+function L1_tilde(x::Array, D::Matrix, DD::Matrix, m::Float64, q::Float64)
+    foo = Matrix{eltype(x)}(undef, size(D))
+    rho = (1/2) .- (x ./ 2)
+    # From direct calculation of the rescaled operator
+    @views ThreadsX.foreach(eachindex(x)) do I
+        foo[I,:] = ((-4 * 20*rho[I] - 30*rho[I]^2 + 20*rho[I]^3 - 5*rho[I]^4) * (-2) / ((rho[I] - 1) * (1 + (rho[I] - 1)^4))) .* D[I,:] + ((-2)^2 * (1 - (rho[I] - 1)^4) / (1 + (rho[I] - 1)^4)) .* DD[I,:]
+        foo[I,I] -= (m^2 + q^2 * (rho[I] - 1)^2 + 4 * (1 + (rho[I] - 1)^4)) / ((rho[I]-1)^2 * (1 + (rho[I] - 1)^4))
+    end
+    return foo
+end
+
+function L2_tilde(x::Array, D::Matrix)
+    foo = Matrix{eltype(x)}(undef, size(D))
+    rho = (1/2) .- (x ./ 2)
+    # From direct calculation of the rescaled operator
+    @views ThreadsX.foreach(eachindex(x)) do I
+        foo[I,:] = (2 * (-2) * (rho[I] - 1)^4 / (1 + (rho[I] - 1)^4)) .* D[I,:]
+        foo[I,I] -= 5 * (1 - rho[I])^3 / (1 + (rho[I] - 1)^4)
+    end
+    return foo
+end
+
+
+#println(L1_tilde(x,D,DD,inputs.m, inputs.q))
+#println(L2_tilde(x,D))
+
+# Remove first row & column from each matrix
+#=
+nrows, ncols = size(D)
+Ldown_tilde = reduce(hcat, [view(L1_tilde(x,D,DD,inputs.m, inputs.q), 1:nrows-1, 1:ncols-1), view(L2_tilde(x,D), 1:nrows-1, 1:ncols-1)])
+
+BigL_tilde = 1im .* vcat(L_up, Ldown_tilde)
+=#
+#print("BigL_tilde: ", size(BigL_tilde), " "); show(BigL_tilde); println("")
 
 # Make the meshgrid
 Z = make_Z(inputs, x)
@@ -525,9 +596,10 @@ Z = make_Z(inputs, x)
 # methods if N > 50 and grid > 10
 println("Computing the psuedospectrum...")
 sig = gpusvd.pspec(Z, copy(F * BigL * inv(F)))
+#sig = gpusvd.pspec(Z, copy(F * BigL_tilde * inv(F)))
 
 # Debug
-if debug > 1
+if debug > 2
     ssig = serial_sigma(G, Ginv, Z, BigL)
     print("Parallel/Serial calculation match: "); println(isapprox(ssig, sig))
 end

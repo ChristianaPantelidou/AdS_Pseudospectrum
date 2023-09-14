@@ -1,10 +1,10 @@
-spectral_N=100
+spectral_N=200
 m=0
 q=0
-xgrid_min=-10.0
-xgrid_max=10.0
+xgrid_min=-10.
+xgrid_max=10.
 ygrid_min=-8.
 ygrid_max=0.
-p_gridx=25
-p_gridy=25
+p_gridx=100
+p_gridy=100
 basis=GL
