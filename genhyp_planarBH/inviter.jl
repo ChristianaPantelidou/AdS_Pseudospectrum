@@ -74,8 +74,12 @@ const radix = 2.0
         mbal!(A)
         println("Matrix after balancing: ", A)
         # Step 2: get preconditioner 
+        # NB. CholeskyPreconditioner requires the matrix before
+        # positive definite; AMGPreconditioner requires the matrix
+        # to be sparse. Only the DiagonalPreconditioner will be 
+        # applicable
         P = DiagonalPreconditioner(A)
-        println("Preconditioner: ", P)
+        println(P)
         # Step 3: QR decomposition to shifted & preconditioned system
         tau = convert(eltype(A[1]), 1.)
         eig = [tau]
@@ -101,7 +105,9 @@ const radix = 2.0
             end
             ii += 1
         end
-        println(eig)
+        # Eigenvalues have been shifted by the choice of tau; 
+        # shift back to return true eigenvalues
+        println(eig .+ tau)
     end
 
 end
