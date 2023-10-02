@@ -72,20 +72,36 @@ const radix = 2.0
     function invit(A::Matrix, n=1) 
         # Step 1: balance matrix
         mbal!(A)
+        println("Matrix after balancing: ", A)
         # Step 2: get preconditioner 
         P = DiagonalPreconditioner(A)
-        println(P)
+        println("Preconditioner: ", P)
         # Step 3: QR decomposition to shifted & preconditioned system
         tau = convert(eltype(A[1]), 1.)
+        eig = [tau]
         Q, R = LinearAlgebra.qr(P \ (A - tau .* I))
-        println(Q, R)
+        println("QR decomposition: ", Q, R)
         # Step 4: inverse iteration to find the n smallest eigenvalues
-        tau = convert(eltype(A[1]), 1.)
         b = rand(eltype(A[1]), size(A)[1])
-        Z = Q' * (P \ b)
-        println(Z)
-        y = R \ Z
-        println(y)
+        b = b ./ maximum(abs, b)
+        println(b)
+        tol = 10^(-4)
+        MAX = 100
+        ii = 0
+        while (ii < MAX)
+            Z = Q' * (P \ b)
+            y = R \ Z
+            println("y: ", y)
+            mu = maximum(abs, y)
+            push!(eig, tau + (1/mu))
+            b = y ./ mu
+            println("b: ", b)
+            if (norm(b - y)/max(norm(y)) < tol)
+                break
+            end
+            ii += 1
+        end
+        println(eig)
     end
 
 end
