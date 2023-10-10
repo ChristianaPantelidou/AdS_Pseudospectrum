@@ -4,9 +4,9 @@ __precompile__()
 # and repeat for as many eigenvalues are required
 =#
 
-module inviter
+module matrixiteration
 
-export invit
+export invit, mbal!, findshift
 
 using ThreadsX
 using GenericLinearAlgebra
@@ -15,10 +15,11 @@ using LinearAlgebra
 using LinearSolve
 using IncompleteLU
 using IterativeSolvers
+using KrylovKit
 
 const radix = 2.0
 # From https://en.wikipedia.org/wiki/GNU_MPFR, BigFloat uses radix = 2
-const EPS = 1.0*10^(-10)
+const EPS = 1.0*10^(-12)
 
     function mmul!(A::Matrix, x::Array)
         if size(A)[2] != length(x)
@@ -53,39 +54,47 @@ const EPS = 1.0*10^(-10)
     # Balance the matrix. To recover the matrix, multiply the ith 
     # column of the matrix by the ith scale 
     function mbal!(A::Matrix)
+        A_cpy = similar(A)
+        copyto!(A_cpy, A)
         RADIX = 2.0
+        convert(eltype(A[1]), RADIX)
         done = false
         count = 1
         scale = ones(eltype(A[1]), size(A)[1])
         while (!done) && (count < 100)
             done=true
-            @views for i in 1:size(A)[1]
+            @views for i in 1:size(A_cpy)[1]
                 # Calculate row and column norms
-                r = sqrt(ThreadsX.sum(x^2 for x in A[i,:] if x != A[i,i]))
-                c = sqrt(ThreadsX.sum(x^2 for x in A[:,i] if x != A[i,i]))
+                r = sqrt(ThreadsX.sum(x^2 for x in A_cpy[i,:] if x != A_cpy[i,i]))
+                c = sqrt(ThreadsX.sum(x^2 for x in A_cpy[:,i] if x != A_cpy[i,i]))
                 if (r != 0.) && (c != 0.)
                     f = 1.
                     s = c^2 + r^2
-                    while (c < r / RADIX)
+                    while (abs(c) < abs(r / RADIX))
                         f *= RADIX
                         c *= RADIX^2
                     end
-                    while (c > r * RADIX) 
+                    while (abs(c) > abs(r * RADIX)) 
                         c /= (RADIX^2)
                         f /= RADIX
                     end
-                    if ((c^2 + r^2)/f < 0.95 * s)
+                    if (abs(c^2 + r^2)/abs(f) < 0.95 * abs(s))
                         done=false
                         scale[i] *= f
                         # Apply similarity transformation
-                        A[i,:] = A[i,:] ./ f
-                        A[:,i] = A[:,i] .* f
+                        A_cpy[i,:] = A_cpy[i,:] ./ f
+                        A_cpy[:,i] = A_cpy[:,i] .* f
                     end
                 end
                 count += 1
             end
         end
-        return scale
+        if cond(A_cpy) < cond(A)
+            A = A_cpy
+            return scale
+        else
+            return 1.0
+        end
     end
 
     function R2(R::Matrix)
@@ -98,6 +107,29 @@ const EPS = 1.0*10^(-10)
             return convert(eltype(x), 0.0)
         else
             return (x^2 - y^2)/(x + y)
+        end
+    end
+
+    # Use random seeds to find an advantageous shift that decreases
+    # the condition number of the matrix
+    function findshift(A::Matrix)
+        icond = abs(cond(A))
+        Nshifts = 100
+        shifts = Vector{eltype(A[1])}(undef, Nshifts)
+        conds = Vector{Real}(undef, Nshifts)
+        ThreadsX.foreach(eachindex(shifts)) do i
+            # Shifts can be positive or negative
+            shifts[i] = 2.0 * rand(eltype(shifts[1])) - 1.
+            conds[i] = cond(A + shifts[i] .* I)
+        end
+        #println("Shifts: ", shifts)
+        min_shift = findmin(abs.(conds))[2]
+        #println("Condition numbers: ", conds)
+        #println("Condition number of best shift: ", conds[min_shift])
+        if conds[min_shift] < icond
+            return shifts[min_shift]
+        else
+            return nothing
         end
     end
 
@@ -159,8 +191,8 @@ const EPS = 1.0*10^(-10)
         nsize = size(A)[1]
         A_cpy = copy(A)
         # Step 1: balance matrix in place and return scaling vector
-        scale = mbal!(A)
-        println("Matrix after balancing: ", A)
+        #scale = mbal!(A)
+        #println("Matrix after balancing: ", A)
         println("Scaling vector: ", scale)
         tau = rand(eltype(A[1]))
         eig = [tau]
@@ -213,5 +245,117 @@ const EPS = 1.0*10^(-10)
         A = deflate(A, b .* scale[n], eig[end])
         println("Deflated: ", A)
     end
+
+    function ecount(D::Matrix)
+        lnum = 0
+        for i in eachindex(diag(D))
+            if D[i,i] > convert(eltype(D[1]), 0.0)
+                lnum += 1
+            else
+                nothing
+            end
+        end
+        return lnum
+    end
+
+    # Ericsson algorithm: https://doi.org/10.2307/2006390
+    # Note: Arnoldi iteration is used in leiu of Lanczos to handle non-Hermitian
+    # matrices. Iteration provided by KrylovKit underlying methods.
+    # Schur factoring provided by GLA
+
+    function ericsson(A::Matrix, neig=1)
+
+        # Apply the Ericsson algorithm to the matrix A and extract 
+        # the leading neig eigenvalues 
+        nrows = size(A)[1]
+        if neig > nrows
+            neig = nrows
+        end
+
+        # Step 0: Rebalance and shift initial matrix
+        println("Intial condition number: ", cond(A))
+        scale = mbal!(A)
+        println("Condition number after balancing: ", cond(A))
+        # Find good shift 
+        shift = findshift(A)
+        if shift != isnothing
+            println("After applying best shift: ", cond(A + shift .* I))
+        else
+            nothing
+        end
+
+        # Convergence criteria
+        ATOL = 1.0*10^(-16)
+        # Sizing
+        nrows = size(A)[1]
+        # Converged eigenvalues
+        C = Vector(undef, 1)
+        # Starting shift
+        μ = shift
+        # Maximum eigenvalue in the current shift window
+        emax = convert(eltype(μ), 0.0)
+
+        # Iterate through successive shifts until the desired 
+        # number of eigenvalues are found 
+
+        while(length(C) + 1 <= neig)
+
+            # Step 1: Factorize shifted system
+            # factor(K - mu M) = V T V'
+            #println("Shift value: ", μ)
+            t, z, foo = GenericLinearAlgebra.schur(A + μ .* I)
+            #println("Schur decomposition: ", t, z, foo)
+        
+            # Step 2: Construct inverse
+            zinv = inv(z)
+            Ainv = zinv' * inv(t) * zinv
+            if !isapprox(Ainv * (A + μ .* I), I)
+                println("Inverse check falied. Residual is ", Ainv * (A + μ .* I) - I)
+            end
+        
+            # Random seed for Kyrlov space
+            r = rand(eltype(μ), nrows)
+
+            # Step 3: Create and initialize Arnoldi iterator from KrylovKit
+            Ait = KrylovKit.ArnoldiIterator(Ainv, r)
+            Afactor = KrylovKit.initialize(Ait)
+
+            # Step 4: Expand Arnoldi iterator until tolerance is reached
+            while normres(Afactor) > ATOL
+                expand!(Ait, Afactor)
+            end
+
+            # Step 5: Find eigenvalues of the Hesseburg 
+            foo, B, r, bar = Afactor
+            #println("Hesseburg of the inverse-shift: ", B)
+            #println("Residual of the Arnoldi iteration: ", r)
+            eigs = GenericLinearAlgebra.eigvals(B)
+            #println("Eigenvalues by Arnoldi iteration: ", eigs)
+
+            # Step 6: Add converged eigenvalues to list
+            for i in eachindex(eigs)
+                #println(abs(r[i]), " ", abs(eigs[i]))
+                if abs(r[i])/abs(eigs[i]) < ATOL
+                    C = append!(C, -μ + 1/eigs[i])
+                end
+            end
+
+            #println("Converged eigenvalues: ", C)
+            emax = maximum([abs(eigs[i]) for i in eachindex(eigs)])
+                
+            
+            # Step 8: If more eigenvalues are required, adjust the shift
+            # and repeat the iteration
+            if emax > abs(μ) 
+                μ += 2.0 * (emax - μ)
+            end
+
+        end
+
+        # Return the desired eigenvalues
+        return ThreadsX.sort!(C[2:neig+1], alg=ThreadsX.StableQuickSort, by = x -> sqrt(real(x)^2 + imag(x)^2))
+
+    end
+
 
 end

@@ -1,10 +1,13 @@
 using LinearAlgebra
+using GenericLinearAlgebra
 
-include("./inviter.jl")
-import .inviter
+include("./matrixiteration.jl")
+import .matrixiteration
 
 # Example matrix
-A = Matrix{Float64}([1.  2.  3.0; 4.  5.  6.0; 7.  8.  9.])
+A = Matrix{Float64}([(4.0/5.0)  (-3.0/5.0)  0.0; (3.0/5.0)  (4.0/5.0)  0.0; 1.  1.  2.])
+# Eigenvalues are 2, (4 \pm 3i)/5
+println("Test matrix eigenvalues: ", GenericLinearAlgebra.eigvals(A))
 println("Matrix before balancing: ", A)
-inviter.invit(A, 1)
-println("Done!")
+eigvals = matrixiteration.ericsson(A, size(A)[1])
+println("Done!\nFound the eigenvalues ", eigvals)

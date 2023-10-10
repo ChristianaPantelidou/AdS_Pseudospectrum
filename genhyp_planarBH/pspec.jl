@@ -18,7 +18,8 @@ include("./quad.jl")
 include("./slf.jl")
 include("./vpert.jl")
 include("./io.jl")
-import .gpusvd, .quad, .slf, .pert, .io
+include("./matrixiteration.jl")
+import .gpusvd, .quad, .slf, .pert, .io, .matrixiteration
 
 #####################
 #= Debug Verbosity =#
@@ -465,15 +466,19 @@ x, D, DD = make_basis(inputs, P)
 println("Constructing the operator...")
 # Remove first row & column from each matrix
 nrows, ncols = size(D)
-println("N = ", inputs.N)
-println("x: ", size(x))
-println("D: ", size(D))
+#println("N = ", inputs.N)
+#println("x: ", size(x))
+#println("D: ", size(D))
 L_up = reduce(hcat, [view(zeros(eltype(x), size(D)), 2:nrows, 2:ncols), view(diagm(ones(eltype(x), length(x))), 2:nrows, 2:ncols)])
 L_down = reduce(hcat, [view(L1(x,D,DD, slf.p, slf.pp, slf.V, slf.w, inputs), 2:nrows, 2:ncols), view(L2(x,D, slf.gamma, slf.gammap, slf.w), 2:nrows, 2:ncols)])
 BigL = -1im .* vcat(L_up, L_down)
+println("Condition number before scaling: ", cond(BigL))
+
+
 
 # Debug
 if debug > 1
+    #=
     println(""); print("Collocation points = ", size(x), " "); show(x); println("")
     #println(""); print("D = ", size(D), " "); show(D); println("")
     #println(""); print("DD = ", size(DD), " "); show(DD); println("")
@@ -490,14 +495,18 @@ if debug > 1
     println(""); print("gam' = ", size(x), " "); show(slf.gammap(x)); println("")
     #println(""); print("L = ", size(BigL), " "); show(BigL); println("")
     #println(""); print("RHS = ", size(RHS), " "); show(RHS); println("")
+    =#
 end
 
 println("Computing eigenvalues...")
-println("GLA.eigvals!: ", ThreadsX.sort!(GenericLinearAlgebra.eigvals!(copy(BigL)), alg=ThreadsX.StableQuickSort, by = x -> sqrt(real(x)^2 + imag(x)^2)))
-vals = Arpack.eigs(copy(BigL), nev=Integer(inputs.N/2), which=:SM, ritzvec=false, explicittransform=:shiftinvert, check=1)
-println("Arpack: ", ThreadsX.sort!(vals[1], alg=ThreadsX.StableQuickSort, by = x -> sqrt(real(x)^2 + imag(x)^2)))
-println("Number of converged eigenvalues: ", vals[3])
-println("Residuals: ", vals[end])
+vals = ThreadsX.sort!(GenericLinearAlgebra.eigvals!(copy(BigL)), alg=ThreadsX.StableQuickSort, by = x -> sqrt(real(x)^2 + imag(x)^2))
+println("GLA.eigvals!: ", vals)
+vals = matrixiteration.ericsson(copy(BigL), 10)
+println("Ericsson:", vals)
+#vals = Arpack.eigs(copy(BigL), nev=Integer(inputs.N/2), which=:SM, ritzvec=false, explicittransform=:shiftinvert, check=1)
+#println("Arpack: ", ThreadsX.sort!(vals[1], alg=ThreadsX.StableQuickSort, by = x -> sqrt(real(x)^2 + imag(x)^2)))
+#println("Number of converged eigenvalues: ", vals[3])
+#println("Residuals: ", vals[end])
 # Requires A to be real, symmetric tridiagonal
 #println("GLA.eigQL!: ", cond(BigL), ThreadsX.sort!(GenericLinearAlgebra.eigQL!(copy(BigL)), alg=ThreadsX.StableQuickSort, by = x -> sqrt(real(x)^2 + imag(x)^2)))
 # Requires A to be real, symmetric tridiagonal
@@ -509,7 +518,7 @@ println("Residuals: ", vals[end])
 println("Done!")
 
 # Write eigenvalues to file
-#io.writeData(vals, inputs.m, inputs.q)
+io.writeData(vals, inputs.m, inputs.q)
 exit()
 # Generalized eigenvalue problem
 #=

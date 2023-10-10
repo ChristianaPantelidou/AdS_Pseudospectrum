@@ -85,8 +85,8 @@ def main(args):
     ax[0].grid(ls='--', alpha=0.5)
     ax[0].set_xlabel(r'Re $\omega$')
     ax[0].set_ylabel(r'Im $\omega$')
-    ax[0].set_xlim(-10,10)
-    ax[0].set_ylim(-7,1)
+    #ax[0].set_xlim(-10,10)
+    #ax[0].set_ylim(-7,1)
 
     if len(args) == 3:
         # Pseudospectrum

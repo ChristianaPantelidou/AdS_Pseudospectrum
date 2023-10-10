@@ -114,12 +114,14 @@ export p, pp, V, w, gamma, gammap
     function w(x::Array)
         foo = Vector{eltype(x)}(undef, length(x))
         ThreadsX.map!(i -> 1, foo, eachindex(x))
+        println("w(x) = ", foo)
         return foo
     end
 
     function gamma(x::Array)
         foo = Vector{eltype(x)}(undef, length(x))
         ThreadsX.map!(i -> -x[i], foo, eachindex(x))
+        println("gamma(x) = ", foo)
         return foo
     end
 
@@ -127,7 +129,8 @@ export p, pp, V, w, gamma, gammap
         foo = Vector{eltype(x)}(undef, length(x))
         ThreadsX.map!(i -> -1, foo, eachindex(x))
         # Limit of 0 as x-> \pm 1
-        foo[1]=foo[length(x)]=0
+        #foo[1]=foo[length(x)]=0
+        println("gamma'(x) = ", foo)
         return foo
     end
 
