@@ -1,4 +1,4 @@
-spectral_N=20
+spectral_N=100
 m=0
 q=0
 xgrid_min=-10.

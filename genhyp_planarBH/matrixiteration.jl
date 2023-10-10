@@ -6,7 +6,7 @@ __precompile__()
 
 module matrixiteration
 
-export invit, mbal!, findshift
+export invit, mbal!, findshift, ericsonn
 
 using ThreadsX
 using GenericLinearAlgebra
@@ -16,6 +16,7 @@ using LinearSolve
 using IncompleteLU
 using IterativeSolvers
 using KrylovKit
+using Arpack
 
 const radix = 2.0
 # From https://en.wikipedia.org/wiki/GNU_MPFR, BigFloat uses radix = 2
@@ -112,14 +113,19 @@ const EPS = 1.0*10^(-12)
 
     # Use random seeds to find an advantageous shift that decreases
     # the condition number of the matrix
-    function findshift(A::Matrix)
+    function findshift(A::Matrix, Nshifts=100)
         icond = abs(cond(A))
-        Nshifts = 100
         shifts = Vector{eltype(A[1])}(undef, Nshifts)
         conds = Vector{Real}(undef, Nshifts)
         ThreadsX.foreach(eachindex(shifts)) do i
-            # Shifts can be positive or negative
-            shifts[i] = 2.0 * rand(eltype(shifts[1])) - 1.
+            # Real shifts based on matrix data type
+            if isreal(shifts)
+                # Shifts in [-1,1]
+                shifts[i] = 2.0 * rand(eltype(shifts[1])) - 1.
+            # Complex shifts
+            else
+                shifts[i] = 2.0 * rand(eltype(shifts[1])) - 1.0 - 1im
+            end
             conds[i] = cond(A + shifts[i] .* I)
         end
         #println("Shifts: ", shifts)
@@ -258,53 +264,188 @@ const EPS = 1.0*10^(-12)
         return lnum
     end
 
+    # Return true if imaginary parts are equal and real parts 
+    # are conjugates
+    function realpair(x, y)
+        if isreal(x) || isreal(y)
+            #println("\nERROR: eigenvalue pairs must be complex\n")
+            return nothing
+        elseif isapprox(imag(x), imag(y))
+            if isapprox(real(x), -real(y))
+                println("Real conjugates: ", x, " and ", y)
+                return true
+            else
+                #println("Not a conjugates: ", x, " and ", y)
+                return false
+            end
+        else
+            # Not a real pair
+            #println("Imaginary parts are not equal: ", x, " and ", y)
+            return false
+        end
+    end
+
+    # Return true if real parts are equal and imaginary parts 
+    # are conjugates
+    function complexpair(x, y)
+        if isreal(x) || isreal(y)
+            #println("\nERROR: eigenvalue pairs must be complex\n")
+            return nothing
+        elseif isapprox(real(x), real(y))
+            if isapprox(imag(x), -imag(y))
+                println("Imaginary conjugates: ", x, " and ", y)
+                return true
+            else
+                #println("Not a conjugates: ", x, " and ", y)
+                return false
+            end
+        else
+            # Not a complex pair
+            #println("\nERROR: real parts are not equal: ", x, " and ", y)
+            return false
+        end
+    end
+
+
+    # Find and return eigenvalue pairs, sorted by size. Remaining values
+    # are returned as 'shifts'
+    function getpairs(v::Vector)
+        p = Vector{eltype(v)}(undef,1)
+        s = Vector{eltype(v)}(undef,1)
+        for i in eachindex(v)
+            # Look through remaining values for a pair
+            for j in i:length(v)
+                if realpair(v[i], v[j])
+                    push!(p, [v[i], v[j]])
+                else
+                    push!(s, v[i])
+                end
+            end
+        end
+        # Return sorted pairs 
+        return ThreadsX.sort(p[2:end], alg=ThreadsX.StableQuickSort, 
+            by = x -> sqrt(real(x)^2 + imag(x)^2)), ThreadsX.sort(s[2:end], 
+            alg=ThreadsX.StableQuickSort, by = x -> sqrt(real(x)^2 + imag(x)^2))
+    end
+
     # Ericsson algorithm: https://doi.org/10.2307/2006390
     # Note: Arnoldi iteration is used in leiu of Lanczos to handle non-Hermitian
     # matrices. Iteration provided by KrylovKit underlying methods.
     # Schur factoring provided by GLA
 
     function ericsson(A::Matrix, neig=1)
-
-        # Apply the Ericsson algorithm to the matrix A and extract 
-        # the leading neig eigenvalues 
+ 
         nrows = size(A)[1]
         if neig > nrows
             neig = nrows
         end
+
+        A_bk = copy(A)
+
+        # Apply the Ericsson algorithm to the matrix A and extract 
+        # the leading neig eigenvalues
 
         # Step 0: Rebalance and shift initial matrix
         println("Intial condition number: ", cond(A))
         scale = mbal!(A)
         println("Condition number after balancing: ", cond(A))
         # Find good shift 
-        shift = findshift(A)
-        if shift != isnothing
-            println("After applying best shift: ", cond(A + shift .* I))
+        best_shift = findshift(A)
+        if  best_shift != isnothing
+            println("Best shift value: ", best_shift)
+            A = A + best_shift .* I
+            println("Condition number after applying best shift: ", cond(A))
         else
             nothing
         end
 
         # Convergence criteria
         ATOL = 1.0*10^(-16)
-        # Sizing
-        nrows = size(A)[1]
         # Converged eigenvalues
         C = Vector(undef, 1)
         # Starting shift
-        μ = shift
+        μ = convert(eltype(best_shift), 0.0)
         # Maximum eigenvalue in the current shift window
         emax = convert(eltype(μ), 0.0)
 
+        # Random seed for Kyrlov space
+        r = rand(eltype(μ), nrows)
+
+        # t, z, foo = GenericLinearAlgebra.schur(A)
+        #println("Schur decomposition: ", t, z, foo)
+
+        # Step 3: Create and initialize Arnoldi iterator from KrylovKit
+        Ait = KrylovKit.ArnoldiIterator(A, r)
+        Afactor = KrylovKit.initialize(Ait)
+
+        # Step 4: Expand Arnoldi iterator until tolerance is reached
+        while normres(Afactor) > ATOL
+            expand!(Ait, Afactor)
+        end
+
+        # Step 5: Find eigenvalues of the Hessenburg 
+        V, B, r, bar = Afactor
+        # Subdiagonal of the Hessenburg
+        v = diag(B, -1)
+        println("Hesseburg subdiagonal of the inverse-shift: ", v)
+        println("Norm residual of the Arnoldi iteration: ", normres(Afactor))
+        #println("Residual of the Arnoldi iteration: ", r)
+        eigs = GenericLinearAlgebra.eigvals(B)
+        println("Eigenvalues by Arnoldi iteration: ", eigs)
+        # Selection criteria: looking for eigenvalue pairs 
+        pairs, shifts = getpairs(eigs)
+        println("Paired eigenvalues: ", pairs)
+        println("Number of non-paired eigenvalues: ", length(shifts))
+        if length(pairs) >= 1
+            C = vcat(C, pairs)
+        end
+        # If all the desired eigenvalues are found, then return the 
+        # properly sorted eigenvalues 
+        if length(C) + 1 > neig
+            A = A_bk
+            return ThreadsX.sort!(C[2:neig] .- best_shift, alg=ThreadsX.StableQuickSort, 
+                by = x -> sqrt(real(x)^2 + imag(x)^2))
+        end
+
+        println("Condition number of Hessenburg matrix: ", cond(B))
+        Hess_shift = findshift(Matrix(B))
+        if Hess_shift != isnothing
+            println("Shifted Hessenburg by ", Hess_shift)
+            B = B + Hess_shift .* I
+            println("Shifted Hessenburg condition number: ", cond(B))
+        end
+ 
+        #eigs = Arpack.eigs(B, nev=neig - length(C), which=:SM, maxiter=1000)
+        #println("Arpack eigenvalues: ", eigs)
+        eigs = GenericLinearAlgebra.eigvals(B)
+        println("Eigenvalues of shifted Hessenburg: ", eigs)
+        C = vcat(C, eigs)
+        # Apply shifted QR method to the Hessenburg until 
+        # the subdiagonal has been zeroed to within the
+        # desired tolerance
+        #=
+        ii = 1 
+        while norm(v) > 10^(-4) && ii <= length(shifts)
+            Q, R = GenericLinearAlgebra.qr(B - shifts[ii] .* I)
+            B = Q' * B * Q
+            #V = V * Q
+            v = diag(B,-1)
+            ii += 1
+        end
+        =#
+        #println("After QR shifts, the subdiagonal is: ", diag(B, -1))
+        #C = vcat(C, GenericLinearAlgebra.eigvals(B))
+
         # Iterate through successive shifts until the desired 
         # number of eigenvalues are found 
-
+#=
         while(length(C) + 1 <= neig)
 
+            break
             # Step 1: Factorize shifted system
             # factor(K - mu M) = V T V'
-            #println("Shift value: ", μ)
-            t, z, foo = GenericLinearAlgebra.schur(A + μ .* I)
-            #println("Schur decomposition: ", t, z, foo)
+            println("Shift value: ", μ)
+            
         
             # Step 2: Construct inverse
             zinv = inv(z)
@@ -313,29 +454,13 @@ const EPS = 1.0*10^(-12)
                 println("Inverse check falied. Residual is ", Ainv * (A + μ .* I) - I)
             end
         
-            # Random seed for Kyrlov space
-            r = rand(eltype(μ), nrows)
-
-            # Step 3: Create and initialize Arnoldi iterator from KrylovKit
-            Ait = KrylovKit.ArnoldiIterator(Ainv, r)
-            Afactor = KrylovKit.initialize(Ait)
-
-            # Step 4: Expand Arnoldi iterator until tolerance is reached
-            while normres(Afactor) > ATOL
-                expand!(Ait, Afactor)
-            end
-
-            # Step 5: Find eigenvalues of the Hesseburg 
-            foo, B, r, bar = Afactor
-            #println("Hesseburg of the inverse-shift: ", B)
-            #println("Residual of the Arnoldi iteration: ", r)
-            eigs = GenericLinearAlgebra.eigvals(B)
-            #println("Eigenvalues by Arnoldi iteration: ", eigs)
+            
 
             # Step 6: Add converged eigenvalues to list
             for i in eachindex(eigs)
-                #println(abs(r[i]), " ", abs(eigs[i]))
+                println(abs(r[i]), " ", abs(eigs[i]))
                 if abs(r[i])/abs(eigs[i]) < ATOL
+                    println("Converged eigenvalue: ", -μ + 1/eigs[i])
                     C = append!(C, -μ + 1/eigs[i])
                 end
             end
@@ -343,7 +468,6 @@ const EPS = 1.0*10^(-12)
             #println("Converged eigenvalues: ", C)
             emax = maximum([abs(eigs[i]) for i in eachindex(eigs)])
                 
-            
             # Step 8: If more eigenvalues are required, adjust the shift
             # and repeat the iteration
             if emax > abs(μ) 
@@ -351,11 +475,15 @@ const EPS = 1.0*10^(-12)
             end
 
         end
-
+=#
         # Return the desired eigenvalues
-        return ThreadsX.sort!(C[2:neig+1], alg=ThreadsX.StableQuickSort, by = x -> sqrt(real(x)^2 + imag(x)^2))
-
+        C = ThreadsX.sort!(C[2:end] .- best_shift .- Hess_shift, alg=ThreadsX.StableQuickSort, by = x -> sqrt(real(x)^2 + imag(x)^2))
+        println("All eigenvalues: ", C)
+        if neig > length(C)
+            return C
+        else
+            return C[begin:neig]
+        end
     end
-
 
 end

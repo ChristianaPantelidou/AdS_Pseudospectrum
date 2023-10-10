@@ -501,7 +501,7 @@ end
 println("Computing eigenvalues...")
 vals = ThreadsX.sort!(GenericLinearAlgebra.eigvals!(copy(BigL)), alg=ThreadsX.StableQuickSort, by = x -> sqrt(real(x)^2 + imag(x)^2))
 println("GLA.eigvals!: ", vals)
-vals = matrixiteration.ericsson(copy(BigL), 10)
+vals = matrixiteration.ericsson(copy(BigL), 20)
 println("Ericsson:", vals)
 #vals = Arpack.eigs(copy(BigL), nev=Integer(inputs.N/2), which=:SM, ritzvec=false, explicittransform=:shiftinvert, check=1)
 #println("Arpack: ", ThreadsX.sort!(vals[1], alg=ThreadsX.StableQuickSort, by = x -> sqrt(real(x)^2 + imag(x)^2)))
@@ -518,7 +518,7 @@ println("Ericsson:", vals)
 println("Done!")
 
 # Write eigenvalues to file
-io.writeData(vals, inputs.m, inputs.q)
+io.writeData(vals, inputs.m, inputs.q, inputs.N)
 exit()
 # Generalized eigenvalue problem
 #=

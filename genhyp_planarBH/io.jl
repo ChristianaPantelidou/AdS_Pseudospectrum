@@ -31,12 +31,37 @@ export writeData, writeCondition
     end
 
     # Write vector data to file
-    function writeData(data::Vector, m::Float64, q::Float64)
+    function writeData(data::Vector, N::Int64)
         # Check for data directory; create if abscent
         isdir("./data") ? nothing : mkdir("./data")
         # Construct file name
-        # If basis=GC, 
-        size = Integer(length(data)/2)
+        size = Integer(N)
+        fname = "./data/Eigenvals_N" * string(size) * "P"
+        if eltype(data) == BigFloat || eltype(data) == Complex{BigFloat}
+            fname *= string(precision(BigFloat)) * ".txt"
+        else
+            fname *= "64.txt"
+        end
+        open(fname, "w") do io
+            writedlm(io, length(data)-1)
+            # Caution: \t character automatically added to file between real and imaginary parts
+            writedlm(io, hcat(real.(data), imag.(data)))
+            println("Wrote data to ", split(io.name," ")[2][1:end-1])
+        end
+    end
+
+
+
+    # Write vector data to file
+    function writeData(data::Vector, m::Float64, q::Float64, N::Int64=1)
+        # Check for data directory; create if abscent
+        isdir("./data") ? nothing : mkdir("./data")
+        # Construct file name
+        if N != 1
+            size = Integer(length(data)/2)
+        else
+            size = Integer(N)
+        end
         fname = "./data/Eigenvals_N" * string(size) * "P"
         if eltype(data) == BigFloat || eltype(data) == Complex{BigFloat}
             fname *= string(precision(BigFloat))
