@@ -76,14 +76,14 @@ export p, pp, V, w, gamma, gammap
     function p(x::Array)
         foo = Vector{eltype(x)}(undef, length(x))
         ThreadsX.map!(i -> 1 - x[i]^2, foo, eachindex(x))
-        println("p(x) = ", foo)
+        #println("p(x) = ", foo)
         return foo
     end
     
     function pp(x::Array)
         foo = Vector{eltype(x)}(undef, length(x))
         ThreadsX.map!(i -> -2 * x[i], foo, eachindex(x))
-        println("p'(x) = ", foo)
+        #println("p'(x) = ", foo)
         return foo
     end
     
@@ -103,25 +103,25 @@ export p, pp, V, w, gamma, gammap
                     println("Root solver returned invalid radial position: ", r)
                     foo[I] = Nan
                 end
-                println("Check: x = ", x[I], " calculated r = ", r)
+                #println("Check: x = ", x[I], " calculated r = ", r)
                 foo[I] = gp(x[I]) * (r^4 - 1) * ((q/r)^2 + 15/4 + m^2 + 9/(4*r^4))
             end
         end
-        println("q(x) = ", foo)
+        #println("q(x) = ", foo)
         return foo
     end
 
     function w(x::Array)
         foo = Vector{eltype(x)}(undef, length(x))
         ThreadsX.map!(i -> 1, foo, eachindex(x))
-        println("w(x) = ", foo)
+        #println("w(x) = ", foo)
         return foo
     end
 
     function gamma(x::Array)
         foo = Vector{eltype(x)}(undef, length(x))
         ThreadsX.map!(i -> -x[i], foo, eachindex(x))
-        println("gamma(x) = ", foo)
+        #println("gamma(x) = ", foo)
         return foo
     end
 
@@ -130,7 +130,7 @@ export p, pp, V, w, gamma, gammap
         ThreadsX.map!(i -> -1, foo, eachindex(x))
         # Limit of 0 as x-> \pm 1
         #foo[1]=foo[length(x)]=0
-        println("gamma'(x) = ", foo)
+        #println("gamma'(x) = ", foo)
         return foo
     end
 

@@ -125,8 +125,8 @@ using BlockArrays
         #print("\nG1 low res: ", size(G1_int), " "); show(G1_int); println("")
         nrows, ncols = size(G1_int)
         # Remove rows and columns corresponding to the rho = 1 boundary
-        Fup = factorize!(Matrix(view(G1_int, 1:nrows-1, 1:ncols-1)))
-        Gup = reduce(hcat, [view(G1_int, 1:nrows-1, 1:ncols-1), zeros(eltype(x), size(G1_int) .- 1)])
+        Fup = factorize!(Matrix(view(G1_int, 2:nrows, 2:ncols)))
+        Gup = reduce(hcat, [view(G1_int, 2:nrows, 2:ncols), zeros(eltype(x), size(G1_int) .- 1)])
         #print("\nG_upper: ", size(Gup), " "); show(Gup); println("")
 
         # Same for G2

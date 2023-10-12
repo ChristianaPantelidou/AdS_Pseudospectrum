@@ -124,7 +124,7 @@ function make_basis(inputs::Inputs, P::Int)
         x = Vector{Float64}(undef, inputs.N)
     end
 
-    println("Using the ", inputs.basis, " collocation grid.")
+    #println("Using the ", inputs.basis, " collocation grid.")
     # Algorithms for different collocation sets
     if inputs.basis == "GC"
         x = push!(x, 0)
@@ -450,11 +450,11 @@ else
 end
 
 if nthreads() > 1
-    println("Number of threads: ", nthreads())
+    #println("Number of threads: ", nthreads())
 end
 if P > 64
     setprecision(P)
-    println("Precision set to ", Base.precision(BigFloat), " bits")
+    #println("Precision set to ", Base.precision(BigFloat), " bits")
 end
 
 # Read the inputs from a file
@@ -463,7 +463,7 @@ inputs = readInputs("./Inputs.txt")
 # Compute the basis
 x, D, DD = make_basis(inputs, P)
 
-println("Constructing the operator...")
+#println("Constructing the operator...")
 # Remove first row & column from each matrix
 nrows, ncols = size(D)
 #println("N = ", inputs.N)
@@ -472,8 +472,11 @@ nrows, ncols = size(D)
 L_up = reduce(hcat, [view(zeros(eltype(x), size(D)), 2:nrows, 2:ncols), view(diagm(ones(eltype(x), length(x))), 2:nrows, 2:ncols)])
 L_down = reduce(hcat, [view(L1(x,D,DD, slf.p, slf.pp, slf.V, slf.w, inputs), 2:nrows, 2:ncols), view(L2(x,D, slf.gamma, slf.gammap, slf.w), 2:nrows, 2:ncols)])
 BigL = -1im .* vcat(L_up, L_down)
-println("Condition number before scaling: ", cond(BigL))
+open("BigL.txt", "w") do io
+    writedlm(io, BigL, ',')
+end
 
+exit()
 
 
 # Debug
