@@ -68,7 +68,7 @@ using LinearAlgebra
     end
 
     # Calculate the pseudospectrum using the Gram matrices
-    function pspec(Z::Matrix, L::Matrix)
+    function pspec(Z::Matrix, L::Matrix,L2::Matrix)
         ##########################################################################
         ##########################################################################
         #=
@@ -106,26 +106,7 @@ using LinearAlgebra
         =#
         ##########################################################################
         ##########################################################################
-
-        #=
-        sig = similar(Z, Float64)
-        # Include progress bar for long calculations
-        p = Progress(length(Z), dt=0.1, desc="Computing pseudospectrum...", 
-        barglyphs=BarGlyphs("[=> ]"), barlen=50)
-        # Automatic load balancing, false sharing protection
-        ThreadsX.foreach(Iterators.product(1:size(Z)[1], 1:size(Z)[2])) do (i,j)
-            # Calculate the shifted matrix
-            Lshift = L - Z[i,j] .* I
-            # Calculate the adjoint
-            Lshift_adj = Ginv * adjoint(Lshift) * G
-            # Calculate the pseudospectrum
-            sig[i,j] = Float64(real(minimum(GenericLinearAlgebra.svdvals(Lshift_adj * Lshift))))
-            next!(p)
-        end
-        finish!(p)
-        return sig
-        =#
-
+        
         foo = Vector{Matrix}(undef, length(Z))
         bar = Vector{Matrix}(undef, length(Z))
         sig = Matrix{Any}(undef, size(Z))
@@ -151,15 +132,14 @@ using LinearAlgebra
             finish!(p)
         # Otherwise, use faster, high-memory method
         else
-            println("Constructing shifted matrices...")
-            ThreadsX.map!(i -> (L - Z[i] .* I), foo, eachindex(Z))
-            println("Constructing adjoint products...")
-            ThreadsX.map!(x -> foo[x] * conj(foo[x]), 
-                bar, eachindex(foo))
-            println("Calculating SVDs...")
-            foo = nothing
-            sig = ThreadsX.map(GenericLinearAlgebra.svdvals!, bar)
-            bar = nothing
+            @inbounds ThreadsX.foreach(CartesianIndices(Z)) do J
+                #println("Constructing shifted matrices...")
+                #Lshift = L - Z[J] .* I
+                println("Calculating SVDs...")
+                #println(size(L),size(L2),size(Z[J]))
+                M=Z[J]*L2-L
+                sig[J] = Float64(real(minimum(GenericLinearAlgebra.svdvals!(M * conj(M)))))
+            end
         end
         # Reshape and return sigma
         return reshape(minimum.(sig), size(Z))

@@ -42,50 +42,48 @@ using BlockArrays
             # Factorization should be of the BunchKaufman type. Produces F.U  
             # (upper-triangular matrix), F.P (permutation vector), F.D (tridiagonal) 
             A_bc = LinearAlgebra.bunchkaufman!(Hermitian(copy(A)))
+            #println(A_bc.D, size(A_bc.D))
             # Perform Cholesky decomposition on tridiagonal portion
-            L = LinearAlgebra.cholesky!(A_bc.D)
+            L = LinearAlgebra.cholesky!(-A_bc.D)
             # Construct the scaling matrix 
             F = L.L * A_bc.U' * A_bc.P 
             return F
         end
     end
 
-    function f_p(x::Array)
-        rho = x ./ 2 .+ (1/2)
-        return ThreadsX.map(i -> 1 - (1 - rho[i])^4, eachindex(rho))
+   # the function f here includes the factor of r^2
+   function f_p(x::Array)
+        z = x ./ 2 .+ (1/2)
+        return ThreadsX.map(i -> (1 - z[i]^4)/z[i]^2, eachindex(z))
     end
     
+##############change################
     # Construct the first Gram matrix from the phi_1 phi_2 term . 
     # Note that factors of (2) come
-    # from changing derivative matrices from x to rho
-    function G1(x::Array, D::Matrix, m::Float64, q::Float64)
+    # from changing derivative matrices from z to x
+    function G1(x::Array, D::Matrix)
         qwts = quadrature(x)
-        rho = x ./ 2 .+ (1/2)
+        z = x ./ 2 .+ (1/2)
         f = f_p(x)
         #print("High res quadrature weights: "); show(wts); println("")
         foo = Matrix{eltype(x)}(undef, size(D))
         # Terms with derivatives
-        foo = D' * (diagm(ThreadsX.map(i -> f[i] * qwts[i] * (1 - rho[i]), 
-                    eachindex(x))) ./ 4) * D
-            - D' * (diagm(qwts .* f)) - (diagm(qwts .* f)) * D
+        foo = D' * (diagm(ThreadsX.map(i -> qwts[i] *4* z[i]^5*(z[i]^4-1),eachindex(z)))) * D
+    # Terms with 1 derivative
+        foo +=   D' * (diagm(ThreadsX.map(i -> qwts[i]*5*z[i]^4*(z[i]^4-1),eachindex(z))) + diagm(ThreadsX.map(i -> qwts[i]*5*z[i]^4*(z[i]^4-1),eachindex(z)))) * D
+
         # Terms without derivatives
-        foo += diagm(ThreadsX.map(i -> qwts[i] * ((4 * f[i] + m^2) / (1 - rho[i]) + q^2 * (1 - rho[i])), eachindex(x)))
+        foo += diagm(ThreadsX.map(i -> qwts[i]*2*z[i]^3 *(2*z[i]^4-5), eachindex(z)))
+        #println("foo")
+        #println(size(foo))
         return foo
     end
 
-    # Construct the first Gram matrix. Note that factors of (2) come
-    # from changing derivative matrices from x to rho
-    function G2(x::Array)
-        qwts = quadrature(x)
-        rho = x ./ 2 .+ (1/2)
-        f = f_p(x)
-        return diagm(ThreadsX.map(i -> qwts[i] * (2 - f[i]) * (1 - rho[i]), eachindex(x)))
-    end
     
     # Use quadrature to construct Gram matrices at double the spectral
     # density, then use interpolation to bring the result back to the
     # proper shape
-    function Gram(x::Vector, D::Matrix, y::Vector, Dy::Matrix, m::Float64, q::Float64)
+    function Gram(x::Vector, D::Matrix, y::Vector, Dy::Matrix)
         # Interpolation from high res (2N+2)x(2N+2) to low res (N+1)x(N+1)
         Imat = interpolator(x,y)
         ImatT = Imat'
@@ -93,47 +91,30 @@ using BlockArrays
         temp = Matrix{eltype(x)}(undef, (length(y), length(x)))
         G1_int = Matrix{eltype(x)}(undef, size(D))
         # Safe matrix product to handle Infs
-        G1mat = G1(y,Dy,m,q)
-        # G(1,1) is Inf but only multiplies a non-zero value once
+        G1mat = G1(y,Dy)
+	#println("G1mat", size(G1mat))
+	#println(G1mat)
+
         @views ThreadsX.foreach(Iterators.product(eachindex(y), eachindex(x))) do (i,j)
-            if i == 1 && j == 1
-                temp[i,j] = Inf
-            elseif i == 1
-                temp[i,j] = dot(G1mat[i,2:end], Imat[2:end,j])
-            else
-                temp[i,j] = dot(G1mat[i,:], Imat[:,j])
-            end
+            
+            temp[i,j] = dot(G1mat[i,:], Imat[:,j])
         end
         @views ThreadsX.foreach(Iterators.product(eachindex(x), eachindex(x))) do (i,j)
             # Intermediate matrix has a row of Infs that multiplies either 0 or 1
-            if isinf(temp[begin,j])
-                if i != 1
-                    # Infinite value is multiplied by 0 so does not contribute
-                    G1_int[i,j] = dot(ImatT[i,begin+1:end], temp[begin+1:end,j])
-                else
-                    # Execpt the last row where it is multiplied by 1
-                    G1_int[i,j] = Inf
-                end
-            else
-                G1_int[i,j] = dot(ImatT[i,:], temp[:,j])
-            end
+            G1_int[i,j] = dot(ImatT[i,:], temp[:,j])
         end
-        
-        # Remove rows and columns corresponding to the rho = 1 boundary
-        Fup = factorize!(Matrix(view(G1_int, 2:length(x), 2:length(x))))
-        Gup = reduce(hcat, [view(G1_int, 2:length(x), 2:length(x)), zeros(eltype(x), (length(x)-1, length(x)-1))])
+	
+	#Gup = reduce(hcat, [view(G1_int, 1:length(x), 1:length(x)), zeros(eltype(x), (length(x), length(x)))])
+	#G = vcat(Gup, Gup)
+	G=G1_int
 
-        # Same for G2
-        #print("G2 high res: "); show(G2(y)); println("")
-        G2_int = ImatT * G2(y) * Imat
-        # Remove rows and columns corresponding to the rho = 1 boundary and factor
-        Flow = factorize!(Matrix(view(G2_int, 2:length(x), 2:length(x))))
-        Glow = reduce(hcat, [zeros(eltype(x), (length(x)-1, length(x)-1)), view(G2_int, 2:length(x), 2:length(x))])
-
-        # Stack and return
-        G = vcat(Gup, Glow)
-        F = vcat(reduce(hcat, [Fup, zeros(eltype(x), size(Fup))]),
-                reduce(hcat, [zeros(eltype(x), size(Flow)), Flow]))
+    #println("G", size(G))
+    #println(G)
+    #println(temp)
+    
+    Fup = factorize!(Matrix(view(G, 1:length(x), 1:length(x))))
+    #F = vcat(reduce(hcat, [Fup, zeros(eltype(x), size(Fup))]), reduce(hcat, [zeros(eltype(x), size(Fup)), Fup]))
+	F=Fup
     return G, F
     end
 

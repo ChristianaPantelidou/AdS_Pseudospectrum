@@ -19,18 +19,6 @@ include("./vpert.jl")
 include("./io.jl")
 import .gpusvd, .quad, .slf, .pert, .io
 
-#####################
-#= Debug Verbosity =#
-#####################
-
-# Debug 0: no debugging information
-# Debug 1: function timings and matrix inversion check
-# Debug 2: outputs from 1 plus matrix outputs and quadrature check
-const debug = 0
-
-#######################################################
-#= Psuedospectrum calculation leveraging parallelism =#
-#######################################################
 
 ####################
 #= Inputs =#
@@ -116,7 +104,7 @@ end
 # Take inputs to determine the type of collocation grid, grid size,
 # desired precision
 function make_basis(inputs::Inputs, P::Int)
-
+    println("the number of grip points is", inputs.N)
     # Determine data types and vector lengths
     if P > 64
         x = Vector{BigFloat}(undef, inputs.N)
@@ -284,132 +272,6 @@ function make_basis(inputs::Inputs, P::Int)
     end
 end
 
-###############
-#= Operators =#
-###############
-
-# Weighted SL functions for better convergence
-function p_w(x::Array)
-    foo = Vector{eltype(x)}(undef, length(x))
-    ThreadsX.map!(i -> (-1/4 - (1 + x[i]^2)^(-2) + (1 + x[i]^2)^(-1) + sqrt(1 - x[i]^2)/(2 + 2*x[i]^2))^(-1), foo, eachindex(x))
-    return foo
-end
-
-function pp_w(x::Array)
-    foo = Vector{eltype(x)}(undef, length(x))
-    ThreadsX.map!(i -> (4*x[i]*(1 + x[i]^2)^2)/(1 - 3*x[i]^2 - x[i]^6 - 2*sqrt(1 - x[i]^2) + x[i]^4*(3 + 2*sqrt(1 - x[i]^2))), foo, eachindex(x))
-    return foo
-end
-
-function V_w(x::Array, l::Int64)
-    foo = Vector{eltype(x)}(undef, length(x))
-    ThreadsX.map!(i -> (2*(1 + x[i]^2)^2*(l*(1 + l)*(-1 + x[i]) - 2*(1 + x[i])))/((-1 + x[i]^2)^2*(1 + x[i]^4 - 2*sqrt(1 - x[i]^2) - 2*x[i]^2*(1 + sqrt(1 - x[i]^2)))), foo, eachindex(x))
-    return foo
-end
-
-
-function g_w(x::Array)
-    foo = Vector{eltype(x)}(undef, length(x))
-    ThreadsX.map!(i -> (-2*(1 + x[i]^2)*(1 - sqrt(1 - x[i]^2) + x[i]^2*(1 + sqrt(1 - x[i]^2))))/((-1 + x[i]^2)*(2 - sqrt(1 - x[i]^2) + x[i]^2*(2 + sqrt(1 - x[i]^2)))) , foo, eachindex(x))
-    return foo
-end
-
-
-function gp_w(x::Array)
-    foo = Vector{eltype(x)}(undef, length(x))
-    ThreadsX.map!(i -> (-2*x[i]*(5 + x[i]^2))/(1 + x[i]^4 - 2*sqrt(1 - x[i]^2) - 2*x[i]^2*(1 + sqrt(1 - x[i]^2))), foo, eachindex(x))
-    return foo
-end
-
-# Use weighted SL functions to calculate operator
-function L1_w(x::Array, D::Matrix, DD::Matrix, l::Int64)
-    foo = Matrix{Complex{eltype(x)}}(undef, (length(x),length(x)))
-    p = p_w(x)
-    pp = pp_w(x)
-    V = V_w(x, l)
-    @views ThreadsX.foreach(eachindex(x)) do i
-        foo[i,:] = pp[i] .* D[i,:] + p[i] .* DD[i,:]
-        foo[i,i] -= V[i]
-    end
-    return foo
-end
-
-function L2_w(x::Array, D::Matrix)
-    g = g_w(x)
-    gp = gp_w(x)
-    foo = Matrix{Complex{eltype(x)}}(undef, (length(x),length(x)))
-    @views ThreadsX.foreach(eachindex(x)) do i
-        foo[i,:] = (2 * g[i]) .* D[i,:]
-        foo[i,i] += gp[i]
-    end
-    return foo
-end
-
-# Unweighted operators
-function L1(x::Array, D::Matrix, DD::Matrix, p, pp, V, w, l::Int64)
-    foo = Matrix{Complex{eltype(x)}}(undef, (length(x),length(x)))
-    p_v = p(x)
-    pp_v = pp(x)
-    V_v = V(x, l)
-    w_v = w(x)
-    @views ThreadsX.foreach(eachindex(x)) do i
-        foo[i,:] = (pp_v[i] / w_v[i]) .* D[i,:] + (p_v[i] / w_v[i]) .* DD[i,:]
-        foo[i,i] -= (V_v[i] / w_v[i])
-    end
-    return foo
-end
-
-
-function L2(x::Array, D::Matrix, gamma, gammap, w)
-    g_v = gamma(x)
-    gp_v = gammap(x)
-    w_v = w(x)
-    foo = Matrix{Complex{eltype(x)}}(undef, (length(x),length(x)))
-    @views ThreadsX.foreach(eachindex(x)) do i
-        foo[i,:] = (2 * g_v[i] / w_v[i]) .* D[i,:]
-        foo[i,i] += gp_v[i] / w_v[i]
-    end
-    return foo
-end
-
-
-# Calculate the More-Penrose pseudoinverse
-function MPinv(A::Matrix)
-    F = GenericLinearAlgebra.svd!(copy(A))
-    sigma = diagm([F.S[i] == 0 ? 0 : 1/F.S[i] for i in eachindex(F.S)])
-    return F.V * sigma * adjoint(F.U)
-end
-
-######################
-#= Condition number =#
-######################
-
-function condition(L::Matrix, G::Matrix, Ginv::Matrix)
-    # Condition number for each eigenvalue: k_i = ||v_i|| ||w_i|| / |<v_i,w_i>|
-    # Construct the adjoint from the Gram matrices
-    Ladj = Ginv * adjoint(L) * G
-    # Eigen is not available for BigFloat type; create temp versions if
-    # current precision is higher than Float64
-    if typeof(G) == Matrix{BigFloat}
-        F_r = eigen(convert(Matrix{Complex{Float64}}, L)) # Right eigensystem
-        F_l = eigen(convert(Matrix{Complex{Float64}}, Ladj)) # Left eigensystem
-    else
-        F_r = eigen(L) # Right eigensystem
-        F_l = eigen(Ladj) # Left eigensystem
-    end
-    # Calculate the condition numbers of the eigenvalues
-    k = Vector(undef, length(F_r.values))
-    @inbounds @views ThreadsX.foreach(eachindex(k)) do i
-        vsize = sqrt(F_r.vectors[:,i]' * G * F_r.vectors[:,i])
-        wsize = sqrt(F_l.vectors[:,i]' * G * F_l.vectors[:,i])
-        vw_prod = F_r.vectors[:,i]' * G * F_l.vectors[:,i]
-        # Condition numbers are purely real; imaginary components are 
-        # numerical error only
-        k[i] = vsize * wsize / sqrt(real(vw_prod)^2 + imag(vw_prod)^2)
-    end
-    # Normalize
-    return k ./ k[1]
-end
 
 ##############################
 #= Psuedospectrum functions =#
@@ -431,10 +293,6 @@ function make_Z(inputs::Inputs, x::Vector)
     end
     return foo
 end
-
-#######################################
-#= Incomplete Cholesky Factorization =#
-#######################################
 
 
 ##################################################
@@ -461,29 +319,6 @@ function serial_sigma(G::Matrix, Ginv::Matrix, Z::Matrix, L::Matrix)
     finish!(p)
 end
 
-################################
-#= Distributed pseudospectrum =#
-################################
-
-# Requires workers to have already been spawned
-@everywhere function pspec(G::Matrix, Ginv::Matrix, Z::Matrix, L::Matrix)
-    if nprocs() > 1
-        # Calculate all the shifted matrices
-        ndim = size(Z)[1]
-        println("Constructing shifted matrices...")
-        foo = pmap(i -> (L - Z[i] .* LinearAlgebra.I), eachindex(Z))
-        # Apply svd to (Lshift)^\dagger Lshift
-        println("Constructing adjoint products...")
-        bar = pmap(x -> (Ginv * adjoint(x) * G) * x, foo)
-        println("Calculating SVDs...")
-        sig = pmap(GenericLinearAlgebra.svdvals!, bar)
-        # Reshape and return sigma
-        return reshape(minimum.(sig), (ndim, ndim))
-    else
-        println("No workers have been spawned");
-        return 1
-    end 
-end
 
 ##########
 #= Main =#
@@ -514,118 +349,63 @@ inputs = readInputs("./Inputs.txt")
 
 # Compute the basis
 x, D, DD = make_basis(inputs, P)
-
+z = x ./ 2 .+ (1/2)
 
 
 println("Constructing the operator...")
-#=
-# Constraint matrix C
-C = vcat(2 .* D, -diagm(ones(eltype(x), length(x))))
-#print("Constraint matrix: ", size(C), " C = "); show(C); println("")
-C_pinv = MPinv(C)
-# Check pseudoinverse
-#println(isapprox(C * C_pinv * C, C))
 
-# Permutation matrix
-P = I - C * C_pinv
-#print("Permutation matrix: ", size(P), " P = "); show(P); println("")
+##########changed############
+L2=view(diagm(4. *z)* D.+5*diagm(ones(eltype(x), length(x))), 1:length(x), 1:length(x))
+#LHSup = reduce(hcat, [L2, zeros(eltype(x),(length(x),length(x)))])
+#LHSlow = reduce(hcat, [zeros(eltype(x), (length(x),length(x))),L2])
+#LHS = vcat(LHSup, LHSlow)
+LHS=1im .* L2
 
-A_down = reduce(hcat, [diagm(V(x, inputs.l) ./ 2), D .* (-2/2)])
-A_up = zeros(eltype(x), size(A_down))
-A = 1im * vcat(A_up, A_down)
-
-#print("A matrix: ", size(A), " A = "); show(A); println("")
-
-# Apply permutations
-A = P * A * P
-
-#print("A matrix: ", size(A), " A = "); show(A); println("")
-
-println("Done! ", ThreadsX.sort!(GenericLinearAlgebra.eigvals!(A), alg=ThreadsX.StableQuickSort, by = x -> sqrt(real(x)^2 + imag(x)^2)))
-=#
-# Construct operator but remove boundary columns and rows
-#=
-Lup = reduce(hcat, [view(2 .* D, 2:length(x)-1, 2:length(x)-1), diagm(ones(eltype(x), length(x)-2))])
-Llow = reduce(hcat, [view(diagm(-V(x, inputs.l) ./ 2), 2:length(x)-1, 2:length(x)-1), view(D, 2:length(x)-1, 2:length(x)-1)])
-#Lup = reduce(hcat, [2 .* D, diagm(ones(eltype(x), length(x)))])
-#Llow = reduce(hcat, [diagm(-slf.V(x, inputs.l) ./ 2), D])
-#println(""); print("Lup ", size(Lup), " = "); show(Lup); println("")
-#println(""); print("Llow ", size(Llow), " = "); show(Llow); println("")
-BigL = 1im .* vcat(Lup, Llow)
+####changed####
+L1=view(diagm(ThreadsX.map(i ->16*z[i]^3,eachindex(z)))+diagm(ThreadsX.map(i ->2*(9* z[i]^4-5),eachindex(z)))*D+diagm(ThreadsX.map(i ->4*z[i]*(z[i]^4-1),eachindex(z)))*DD, 1:length(x), 1:length(x))
+#Lup = reduce(hcat, [L1,zeros(eltype(x), (length(x),length(x)))])
+#Llow = reduce(hcat, [zeros(eltype(x),(length(x),length(x))), L1])
+#BigL = 1im .* vcat(Lup, Llow)
+BigL =  L1
 #println(""); print("BigL ", size(BigL), " = "); show(BigL); println("")
-#println("Done!")
-LHSup = zeros(eltype(x), size(Lup))
-LHSlow = reduce(hcat, [zeros(eltype(x), (length(x)-2,length(x)-2)), diagm(ones(eltype(x), length(x)-2))])
-#LHSlow = reduce(hcat, [zeros(eltype(x), size(D)), diagm(ones(eltype(x), length(x)))])
-LHS = vcat(LHSup, LHSlow)
-=#
+println("Done!")
 
-L_up = reduce(hcat, [zeros(eltype(x), size(D)), diagm(ones(eltype(x), length(x)))])
-L_dwn = reduce(hcat, [L1_w(x, D, DD, inputs.l), L2_w(x, D)])
-#L_dwn = reduce(hcat, [L1(x, D, DD, slf.p, slf.pp, slf.V, slf.w, inputs.l), 
-#    L2(x, D, slf.gamma, slf.gammap, slf.w)])
-BigL = -1im .* vcat(L_up, L_dwn)
+#println(D)
+#println("L2")
+#println(LHS)
+#println("L1")
+#println(BigL)
 
-#=
-println(""); print("Collocation points = ", size(x), " "); show(x); println("")
-println(""); print("D = ", size(D), " "); show(D); println("")
-println(""); print("DD = ", size(DD), " "); show(DD); println("")
-println(""); print("Lup = ", size(L_up), " "); show(L_up); println("")
-println(""); print("Llow = ", size(L_dwn), " "); show(L_dwn); println("")
-println(""); print("L = ", size(BigL), " "); show(BigL); println("")
-=#
-println("Computing eigenvalues...")
-vals = ThreadsX.sort!(GenericLinearAlgebra.eigvals!(BigL), alg=ThreadsX.StableQuickSort, by = x -> sqrt(real(x)^2 + imag(x)^2))
-io.writeData(vals, inputs.l)
-println(vals)
-exit()
-
-println("Operator condition number: ", cond(BigL))
-#println("Operator: ", BigL)
-println("RHS condition number: ", cond(LHS))
-#println("RHS: ", LHS)
+#exit()
 println("Computing eigenvalues...")
 vals = eigen(BigL, LHS)
 println("Done! ", ThreadsX.sort!(vals.values, alg=ThreadsX.StableQuickSort, by = x -> sqrt(real(x)^2 + imag(x)^2)))
 
-exit()
+
 #print("Eigenvalues = "); show(vals); println("")
 # Write eigenvalues to file
-io.writeData(vals, inputs.m, inputs.q)
+io.writeData(vals.values, inputs.N)
 
-exit()
+
+#println(size(BigL))
+#println(size(LHS))
 
 # Copy of basis at double spectral resolution
 inputs2 = deepcopy(inputs)
 inputs2.N = 2 * inputs.N
 y, Dy, DDy = make_basis(inputs2, P)
 
+#println(size(x),",",size(y))
 # Construct the Gram matrix: compute at double resolution, then 
 # interpolate down and finally remove rows and columns corresponding
-# to rho = 1
+# to z = 0
 println("Iterpolating integrals...")
-G, F = quad.Gram(x, D, y, Dy, inputs.m, inputs.q)
+G, F = quad.Gram(x, D, y, Dy)
 println("Done!")
 
-#vals = ThreadsX.sort!(GenericLinearAlgebra.eigvals!(copy(F * BigL * inv(F))), alg=ThreadsX.StableQuickSort, by = x -> sqrt(real(x)^2 + imag(x)^2))
-#print("Done! Rescaled eigenvalues = "); show(vals); println("")
-
-# Debug
-if debug > 1
-    println(""); print("Collocation points = ", size(x), " "); show(x); println("")
-    println(""); print("Rho collocations = ", size(rho), " "); show(rho); println("")
-    println(""); print("D = ", size(D), " "); show(D); println("")
-    println(""); print("DD = ", size(DD), " "); show(DD); println("")
-    println(""); print("Lup = ", size(Lup), " "); show(Lup); println("")
-    println(""); print("Llow = ", size(Llow), " "); show(Llow); println("")
-    println(""); print("L = ", size(BigL), " "); show(BigL); println("")
-    println(""); print("G = ", size(G), " "); show(G); println("")
-end
-
-exit()
 
 ##################################
-#= Calculate the Psuedospectrum =#
+#= Calculate the Pseudospectrum =#
 ##################################
 
 # Make the meshgrid
@@ -634,66 +414,15 @@ Z = make_Z(inputs, x)
 # Calculate the sigma matrix. Rough benchmarking favours multiprocessor
 # methods if N > 50 and grid > 10
 println("Computing the psuedospectrum...")
-sig = gpusvd.pspec(Z, copy(F * BigL * inv(F)))
 
-# Debug
-if debug > 1
-    ssig = serial_sigma(G, Ginv, Z, BigL)
-    print("Parallel/Serial calculation match: "); println(isapprox(ssig, sig))
-end
+println(size(Z))
+
+sig = gpusvd.pspec(Z, copy(F * BigL * inv(F)),copy(F * LHS * inv(F)))
 
 # Write Psuedospectrum to file (x vector for data type)
-io.writeData(sig, x, inputs.m, inputs.q, inputs)
+io.writeData(sig, x, inputs)
 println("Done!")
 #print("Sigma = "); show(sig); println("")
 println("Smallest sigma: ", minimum(abs, sig))
 
-
-# Calculate the condition numbers of the eigenvalues
-#=
-println("Calculating conditition numbers...")
-k = condition(L, G, Ginv)
-println("Done! Condition numbers = ", k)
-io.writeCondition(k)
-=#
-
-
-# Debug/timing
-if debug > 0
-    #=
-    print("Ginv * G = I: "); println(isapprox(Ginv * G, I))
-    # Serial Timing
-    println("Timing for serial sigma:")
-    @btime serial_sigma(G, Ginv, Z, BigL) 
-    # Large, block matrix
-    println("Timing for gpusvd.sigma:")
-    @btime gpusvd.sigma(G, Ginv, Z, BigL)
-    # Threaded over individual shifted matrices
-    println("Timing for gpusvd.pspec:")
-    @btime gpusvd.pspec(G, Ginv, Z, BigL)
-    # Multiproc method
-    addprocs(nthreads())
-    @everywhere using GenericLinearAlgebra
-    println("Timing for Distributed pspec:")
-    @btime pspec(G, Ginv, Z, BigL)
-    rmprocs(workers())
-    =#
-end
-
-
-
-# Add a perturbation to the potential with a specified magnitude
-
-# Example: Gaussian distribution
-#     dV = [exp(-0.5 * x[i] * x[i]) / sqrt(2 * pi) for i in eachindex(x)]
-# Example: Random values
-#     Random.seed!(1234)
-#     dV = Vector{eltype(x)}(rand(length(x)))
-
-
-#=
-dV = cos.((2*pi*50) .* x)
-epsilon = 1e-3
-pert.vpert(epsilon, dV, slf.w, x, G, Ginv, BigL)
-
-=#
+exit()

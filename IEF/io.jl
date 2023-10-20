@@ -70,7 +70,7 @@ export writeData, writeCondition
         end
     end
 
-    function writeData(data::Matrix, x::Vector, m::Float64, q::Float64, inpts::Any)
+    function writeData(data::Matrix, x::Vector, inpts::Any)
         # Check for data directory; create if abscent
         isdir("./data") ? nothing : mkdir("./data")
         # Construct file name
@@ -81,7 +81,7 @@ export writeData, writeCondition
         else
             fname *= "64"
         end
-        fname *= "m" * string(round(m; digits=1)) * "q" * string(round(q; digits=1)) * ".txt"
+        fname *= "test.txt"
         open(fname, "w") do io
             writedlm(io, adjoint([inpts.xmin::Float64, inpts.xmax::Float64, inpts.ymin::Float64, inpts.ymax::Float64, inpts.xgrid::Int64]))
             writedlm(io, hcat(size(data)))
